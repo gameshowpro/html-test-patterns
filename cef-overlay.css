@@ -1,0 +1,30 @@
+/* Shared CEF overlay stylesheet to force transparent, fullscreen, non-interactive layouts */
+* {
+    box-sizing: border-box;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background-color: transparent !important;
+    background: transparent !important;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: none !important; /* Hide mouse cursor for overlays */
+}
+
+/* Force canvas and standard overlay elements to be fullscreen and transparent */
+canvas, .fullscreen-overlay {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw !important;
+    height: 100vh !important;
+    border: none;
+    pointer-events: none !important; /* Suppress all interactions */
+    background: transparent !important;
+}

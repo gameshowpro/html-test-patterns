@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chromophilic</title>
+    <link rel="stylesheet" href="../cef-overlay.css">
+    <style>
+        body {
+            background-color: transparent !important;
+            margin: 0;
+            overflow: hidden;
+        }
+        canvas {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+            background: transparent !important;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+
+    <!-- Fragment Shader -->
+    <script type="x-shader/x-fragment" id="fragment-shader">#version 300 es
+    /*********
+    * made by Matthias Hurrle (@atzedent)
+    * adapted for transparent CEF overlays
+    */
+    precision highp float;
+    out vec4 O;
+    uniform float time;
+    uniform vec2 resolution;
+    uniform vec2 wheel;
+    #define FC gl_FragCoord.xy
+    #define R resolution
+    #define T (time+wheel.y/1e3)
+    #define S smoothstep
+    #define N normalize
+    #define MN min(R.x,R.y)
+    #define rot(a) mat2(cos((a)-vec4(0,11,33,0)))
+    
+    float rnd(vec2 p) {
+        p=fract(p*vec2(12.9898,78.233));
+        p+=dot(p,p+34.56);
+        return fract(p.x*p.y);
+    }
+    
+    float noise(vec2 p) {
+        vec2 i=floor(p), u=S(i,i+1.,p), k=vec2(1,0);
+        float
+        a=rnd(i),
+        b=rnd(i+k),
+        c=rnd(i+k.yx),
+        d=rnd(i+k.xx);
+        return mix(mix(a,b,u.x),mix(c,d,u.x),u.y);
+    }
+    
+    vec3 pattern(vec2 uv) {
+        const float k=4.;
+        float grain=mix(.0,noise(uv*rot(.4)*80.),min(T*.3,1.));
+        vec3 col=vec3(0);
+        vec2
+        a=vec2(noise(uv-T+noise(uv*2.+grain)),noise(T*.1-uv+vec2(3,5))),
+        b=vec2(noise(T+uv+vec2(7,3)+a*k),noise(T*.3-uv+a*k)),
+        c=vec2(noise(T*.2-uv+vec2(1,4)+b*k),noise(T*.5-uv-vec2(4,1)+b*k)),
+        d=vec2(noise(T*.4-uv+vec2(2,3)+c*k),noise(T*.2-uv-vec2(7,2)+c*k));
+        col+=max(.3,noise(uv-d));
+        col=clamp(col,.0,.35);
+        float f=clamp(dot(a,b),-1.,1.);
+        // add color
+        col+=vec3(a.x/3.+a.y/2.+f*1.4,a.x+a.x/(2.4+f*f),b.x*b.y/1.5+f*.6+d.y*.4)/3.;
+        // add highlights
+        col+=pow(d.x*d.y,4.)*vec3(.2,.8,1);
+        // highlight larger patches
+        col+=.4*pow(a.x,5.);
+        return col;
+    }
+    
+    float map(vec3 p) {
+        p.y=abs(p.y)-1.01;
+        return length(p.yz)-1.;
+    }
+    
+    vec3 norm(vec3 p) {
+        float h=1e-3; vec2 k=vec2(-1,1);
+        return N(
+            k.xyy*map(p+k.xyy*h)+
+            k.yxy*map(p+k.yxy*h)+
+            k.yyx*map(p+k.yyx*h)+
+            k.xxx*map(p+k.xxx*h)
+        );
+    }
+    
+    bool march(inout vec3 p, vec3 rd) {
+        for (int i; i++<400;) {
+            float d=map(p);
+            if (abs(d)<1e-3) return true;
+            if (d>100.) return false;
+            p+=rd*d;
+        }
+        return false;
+    }
+    
+    vec4 render(vec2 uv) {
+        vec3 col=vec3(0);
+        vec3 p=vec3(0,0,-1);
+        vec3 rd=N(vec3(uv,.2));
+        float alpha = 0.0;
+        
+        if (march(p,rd)) {
+            vec3 n=norm(p);
+            vec2 st=p.xy;
+            if (sign(st.y)>.0) st.x+=3.;
+            st.y=abs(st.y)-1.01;
+            st.y-=T*.5;
+            col+=-n.z*pattern(st.xy);
+            // add dot pattern
+            p.x-=sign(p.y)*T;
+            col+=-n.z*S(S(4.,.0,length(uv.x))*distance(sin(8.*p.x),cos(T*4.-sin(T-sin(T*2.))+12.*abs(p.y))),.0,.9);
+            alpha = 1.0;
+        }
+        return vec4(col, alpha);
+    }
+    
+    // animates the scene
+    void anim(inout vec2 uv) {
+        uv*=1.+S(.0,1.,clamp(1.2*dot(uv,uv),.0,1.));
+        uv*=rot(T*.1-sin(T*.5-sin(T)));
+    }
+    
+    void main() {
+        vec2 uv=(FC-.5*R)/MN;
+        anim(uv);
+        vec4 res = render(uv);
+        vec3 col = res.rgb;
+        float alpha = res.a;
+        col=S(-.1,1.,col);
+        // brighten the scene
+        col+=abs(col)*.25;
+        // color grading
+        col=tanh(col*col*col);
+        // vignette
+        vec2 c=FC/R;
+        c*=1.-c.yx;
+        float v=c.x*c.y*25.;
+        float vig = pow(v,.125); // very subtle
+        col*=vig;
+        O = vec4(col, alpha * vig);
+    }</script>
+
+    <!-- JS Logic -->
+    <script>
+        let resolution = 1.0; // Run at full resolution for high quality overlays
+        let dpr = window.devicePixelRatio;
+        let frm, source, renderer, pointers;
+
+        window.onload = init;
+
+        function resize() {
+            const { innerWidth: width, innerHeight: height } = window;
+            const canvas = document.getElementById('canvas');
+            canvas.width = width * dpr;
+            canvas.height = height * dpr;
+            if (renderer) {
+                renderer.updateScale(dpr);
+            }
+        }
+
+        function loop(now) {
+            renderer.updateMouse(pointers.first);
+            renderer.updatePointerCount(pointers.count);
+            renderer.updatePointerCoords(pointers.coords);
+            renderer.updateMove(pointers.move);
+            renderer.updateZoom(pointers.zoomed);
+            renderer.updateWheel(pointers.wheel);
+            renderer.render(now);
+            frm = requestAnimationFrame(loop);
+        }
+
+        function init() {
+            const canvas = document.getElementById('canvas');
+            source = document.getElementById('fragment-shader');
+            
+            renderer = new Renderer(canvas, dpr);
+            pointers = new PointerHandler(canvas, dpr);
+            
+            renderer.setup();
+            renderer.init();
+            renderer.updateShader(source.textContent);
+
+            resize();
+            loop(0);
+            
+            window.onresize = resize;
+        }
+
+        class Renderer {
+            #vertexSrc = "#version 300 es\nprecision highp float;\nin vec4 position;\nvoid main(){gl_Position=position;}";
+            #vertices = [-1, 1, -1, -1, 1, 1, 1, -1];
+            
+            constructor(canvas, scale) {
+                this.canvas = canvas;
+                this.scale = scale;
+                this.gl = canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: false });
+                this.gl.viewport(0, 0, canvas.width * scale, canvas.height * scale);
+                this.shaderSource = null;
+                this.mouseMove = [0, 0];
+                this.mouseCoords = [0, 0];
+                this.pointerCoords = [0, 0];
+                this.nbrOfPointers = 0;
+                this.zoom = 0;
+                this.wheel = [0, 0];
+                this.startRandom = Math.random();
+            }
+
+            updateShader(source) {
+                this.shaderSource = source;
+                this.setup();
+                this.init();
+            }
+
+            updateMove(deltas) { this.mouseMove = deltas; }
+            updateZoom(zoom) { this.zoom = zoom; }
+            updateWheel(wheel) { this.wheel = wheel; }
+            updateMouse(coords) { this.mouseCoords = coords; }
+            updatePointerCoords(coords) { this.pointerCoords = coords; }
+            updatePointerCount(nbr) { this.nbrOfPointers = nbr; }
+            
+            updateScale(scale) {
+                this.scale = scale;
+                this.gl.viewport(0, 0, this.canvas.width * scale, this.canvas.height * scale);
+            }
+
+            compile(shader, source) {
+                const gl = this.gl;
+                gl.shaderSource(shader, source);
+                gl.compileShader(shader);
+                if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                    console.error(gl.getShaderInfoLog(shader));
+                }
+            }
+
+            setup() {
+                const gl = this.gl;
+                this.vs = gl.createShader(gl.VERTEX_SHADER);
+                this.fs = gl.createShader(gl.FRAGMENT_SHADER);
+                this.compile(this.vs, this.#vertexSrc);
+                this.compile(this.fs, this.shaderSource);
+                this.program = gl.createProgram();
+                gl.attachShader(this.program, this.vs);
+                gl.attachShader(this.program, this.fs);
+                gl.linkProgram(this.program);
+            }
+
+            init() {
+                const { gl, program } = this;
+                this.buffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(this.#vertices), gl.STATIC_DRAW);
+
+                const position = gl.getAttribLocation(program, "position");
+                gl.enableVertexAttribArray(position);
+                gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+
+                program.resolution = gl.getUniformLocation(program, "resolution");
+                program.time = gl.getUniformLocation(program, "time");
+                program.daytime = gl.getUniformLocation(program, "daytime");
+                program.move = gl.getUniformLocation(program, "move");
+                program.touch = gl.getUniformLocation(program, "touch");
+                program.pointerCount = gl.getUniformLocation(program, "pointerCount");
+                program.pointers = gl.getUniformLocation(program, "pointers");
+                program.zoom = gl.getUniformLocation(program, "zoom");
+                program.wheel = gl.getUniformLocation(program, "wheel"); 
+                program.startRandom = gl.getUniformLocation(program, "startRandom");
+            }
+
+            render(now = 0) {
+                const { gl, program, buffer, canvas, mouseMove, mouseCoords, pointerCoords, nbrOfPointers, zoom, wheel, startRandom } = this;
+                const daytime = new Date();
+                if (!program) return;
+
+                gl.clearColor(0, 0, 0, 0); // Transparent clear
+                gl.clear(gl.COLOR_BUFFER_BIT);
+                gl.useProgram(program);
+                gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+                gl.uniform2f(program.resolution, canvas.width, canvas.height);
+                gl.uniform1f(program.time, now * 1e-3);
+                gl.uniform4f(program.daytime, daytime.getHours(), daytime.getMinutes(), daytime.getSeconds(), daytime.getMilliseconds());
+                gl.uniform2f(program.move, ...mouseMove);
+                gl.uniform2f(program.touch, ...mouseCoords);
+                gl.uniform1i(program.pointerCount, nbrOfPointers);
+                gl.uniform2fv(program.pointers, pointerCoords);
+                gl.uniform1f(program.zoom, zoom);
+                gl.uniform2f(program.wheel, ...wheel);
+                gl.uniform1f(program.startRandom, startRandom);
+                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            }
+        }
+
+        class PointerHandler {
+            constructor(element, scale) {
+                this.scale = scale;
+                this.pointers = new Map();
+                this.lastCoords = [0, 0];
+                this.moves = [0, 0];
+                this.zoom = 0;
+                this.wheelDelta = 0;
+                this.wheelOffset = 0;
+            }
+            getScale() { return this.scale; }
+            updateScale(scale) { this.scale = scale; }
+            get count() { return this.pointers.size; }
+            get move() { return this.moves; }
+            get zoomed() { return this.zoom; }
+            get wheel() { return [this.wheelDelta, this.wheelOffset]; }
+            get coords() { return [0, 0]; }
+            get first() { return [0, 0]; }
+        }
+    </script>
+</body>
+</html>
