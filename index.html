@@ -10,11 +10,28 @@
 <body>
     <header>
         <h1>HTML Test Patterns</h1>
-        <p>A collection of animations adapted for video keying, CEF overlays, and streaming layouts. All patterns run fullscreen with transparent backgrounds and suppressed interactions.</p>
+        <p>A collection of animations adapted for video keying, CEF overlays, and streaming layouts. Everything runs fullscreen with suppressed interactions, and — the reference test card aside — a transparent background.</p>
     </header>
 
     <main>
         <div class="patterns-grid">
+            <div class="card">
+                <a href="test-card/index.html" class="card-link">
+                    <div class="card-title">
+                        Test Card
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"></line><polyline points="7 7 17 7 17 17"></polyline></svg>
+                    </div>
+                    <p class="card-desc">SMPTE RP 219 bars and PLUGE, drawn as SVG at the viewport's exact device-pixel resolution. Colourimetry follows the resolution; <code>?sync</code> swaps the stereo ident for an A/V sync flash. Opaque by design.</p>
+                </a>
+                <ul class="chips">
+                    <li class="chip chip-flags" title="Behaviour is configurable with query-string flags">flags</li>
+                </ul>
+                <div class="card-meta">
+                    <span class="card-tag">Custom / SVG</span>
+                    <span class="card-author">RP 219 · BT.1729</span>
+                </div>
+            </div>
+
             <div class="card">
                 <a href="dark-city-ambience/index.html" class="card-link">
                     <div class="card-title">
@@ -23,6 +40,9 @@
                     </div>
                     <p class="card-desc">Rain and reflections on a glass screen, drawing a glowing cityscape at night.</p>
                 </a>
+                <ul class="chips">
+                    <li class="chip chip-key" title="Transparent background — usable as a key source">key</li>
+                </ul>
                 <div class="card-meta">
                     <span class="card-tag">CodePen / WebGL</span>
                     <span class="card-author">by <a href="https://codepen.io/atzedent/pen/zxKmgpj" target="_blank" rel="noopener">atzedent</a></span>
@@ -37,6 +57,9 @@
                     </div>
                     <p class="card-desc">Organic, morphing chromatic shapes blending across dynamic palettes.</p>
                 </a>
+                <ul class="chips">
+                    <li class="chip chip-key" title="Transparent background — usable as a key source">key</li>
+                </ul>
                 <div class="card-meta">
                     <span class="card-tag">CodePen / WebGL</span>
                     <span class="card-author">by <a href="https://codepen.io/atzedent/pen/bNgKVvN" target="_blank" rel="noopener">atzedent</a></span>
@@ -51,6 +74,9 @@
                     </div>
                     <p class="card-desc">High-quality falling cherry blossom petals rendering with depth-of-field blur.</p>
                 </a>
+                <ul class="chips">
+                    <li class="chip chip-key" title="Transparent background — usable as a key source">key</li>
+                </ul>
                 <div class="card-meta">
                     <span class="card-tag">CodePen / WebGL</span>
                     <span class="card-author">by <a href="https://codepen.io/at80/pen/kyOdeK" target="_blank" rel="noopener">at80</a></span>
@@ -65,6 +91,9 @@
                     </div>
                     <p class="card-desc">Swarming light particles floating fluidly in an organic flocking pattern.</p>
                 </a>
+                <ul class="chips">
+                    <li class="chip chip-key" title="Transparent background — usable as a key source">key</li>
+                </ul>
                 <div class="card-meta">
                     <span class="card-tag">CodePen / Canvas 2D</span>
                     <span class="card-author">by <a href="https://codepen.io/tmrDevelops/pen/dMdNvy" target="_blank" rel="noopener">tmrDevelops</a></span>
@@ -79,6 +108,9 @@
                     </div>
                     <p class="card-desc">Raymarched 3D ocean waves under a transparent sky, rendering procedurally.</p>
                 </a>
+                <ul class="chips">
+                    <li class="chip chip-key" title="Transparent background — usable as a key source">key</li>
+                </ul>
                 <div class="card-meta">
                     <span class="card-tag">Shadertoy / WebGL</span>
                     <span class="card-author">by <a href="https://www.shadertoy.com/view/Ms2SD1" target="_blank" rel="noopener">Alexander Alekseev</a></span>
@@ -93,6 +125,9 @@
                     </div>
                     <p class="card-desc">Recreation of the classic Windows screensaver with bouncing glowing wireframes on a transparent background.</p>
                 </a>
+                <ul class="chips">
+                    <li class="chip chip-key" title="Transparent background — usable as a key source">key</li>
+                </ul>
                 <div class="card-meta">
                     <span class="card-tag">Custom / Canvas 2D</span>
                     <span class="card-author">by <a href="https://www.shadertoy.com/view/MsKcRh" target="_blank" rel="noopener">Shadertoy</a></span>
@@ -107,6 +142,9 @@
                     </div>
                     <p class="card-desc">3D blobs morphing dynamically via WebGL marching cubes on a transparent context.</p>
                 </a>
+                <ul class="chips">
+                    <li class="chip chip-key" title="Transparent background — usable as a key source">key</li>
+                </ul>
                 <div class="card-meta">
                     <span class="card-tag">Three.js / WebGL</span>
                     <span class="card-author">by <a href="https://github.com/mrdoob/three.js/blob/master/examples/webgl_marchingcubes.html" target="_blank" rel="noopener">three.js</a></span>
@@ -121,12 +159,65 @@
                     </div>
                     <p class="card-desc">3D spheres rendering physical clearcoat reflective materials floating dynamically.</p>
                 </a>
+                <ul class="chips">
+                    <li class="chip chip-key" title="Transparent background — usable as a key source">key</li>
+                </ul>
                 <div class="card-meta">
                     <span class="card-tag">Three.js / WebGL</span>
                     <span class="card-author">by <a href="https://github.com/mrdoob/three.js/blob/master/examples/webgl_materials_physical_clearcoat.html" target="_blank" rel="noopener">three.js</a></span>
                 </div>
             </div>
         </div>
+
+        <section class="docs">
+            <h2>Test Card options</h2>
+            <p class="docs-intro">
+                Bare query-string flags, order-independent, and freely combined &mdash; for example
+                <a href="test-card/index.html?2020&amp;sync&amp;legal"><code>?2020&amp;sync&amp;legal</code></a>.
+                Everything else is chosen automatically from the resolution of the viewport.
+            </p>
+            <table class="flag-table">
+                <thead>
+                    <tr><th>Flag</th><th>Effect</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>601</code> <code>601-625</code> <code>ebu</code> <code>709</code> <code>2020</code></td>
+                        <td>Force the colourimetry. By default it follows the resolution: up to 1024&times;576 uses BT.601, from 3840&times;2160 uses BT.2020, and anything between uses BT.709. <code>601</code> is SMPTE 170M (525-line); <code>601-625</code> and <code>ebu</code> are both EBU 3213.</td>
+                    </tr>
+                    <tr>
+                        <td><code>sync</code></td>
+                        <td>EBU 3325 sync-flash variant. A bar sweeps the frame every two seconds and the strip flashes white for exactly one frame as it passes the centre, coincident with a 40&nbsp;ms 1&nbsp;kHz blip. Replaces the stereo ident.</td>
+                    </tr>
+                    <tr>
+                        <td><code>legal</code></td>
+                        <td>Map 0&ndash;100% video onto codes 16&ndash;235, which makes the sub-black PLUGE bar representable. Without it the &minus;2% bar clips to black &mdash; the identification strip says which mode is live.</td>
+                    </tr>
+                    <tr>
+                        <td><code>noosd</code></td>
+                        <td>Drop every burned-in caption: the identification strip, the detail-band labels, the aspect-ratio labels and the sync caption. The strip's twelfth returns to the colour bars and the gratings grow to fill their cells. Marker lines and all measurement elements stay.</td>
+                    </tr>
+                    <tr>
+                        <td><code>nomarkers</code></td>
+                        <td>Omit the safe-area boxes, centre-cut lines, centre cross and geometry circle.</td>
+                    </tr>
+                    <tr>
+                        <td><code>srgb</code></td>
+                        <td>Force sRGB output even on a wide-gamut display, instead of emitting the bars as <code>color(rec2020&nbsp;&hellip;)</code>.</td>
+                    </tr>
+                    <tr>
+                        <td><code>mute</code></td>
+                        <td>Build the picture only, with no audio.</td>
+                    </tr>
+                </tbody>
+            </table>
+            <p class="docs-note">
+                Audio runs at &minus;18&nbsp;dBFS and starts on its own where autoplay permits; otherwise any
+                click or keypress starts it, and the identification strip reports the audio state.
+                The default ident is a continuous 1&nbsp;kHz tone on the left channel against a
+                1&nbsp;kHz tone on the right interrupted once a second.
+            </p>
+        </section>
     </main>
 
     <footer>

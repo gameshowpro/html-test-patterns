@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Card</title>
+    <link rel="stylesheet" href="../cef-overlay.css">
+    <style>
+        /* The test card is deliberately opaque: it is a reference, not a key source. */
+        html, body {
+            background: #000 !important;
+            background-color: #000 !important;
+        }
+        #card {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            display: block;
+            pointer-events: none;
+            font-family: Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <svg id="card" xmlns="http://www.w3.org/2000/svg"></svg>
+
+    <script>
+    /* ------------------------------------------------------------------------
+     * Dynamically-built multiformat test card.
+     *
+     *   Architecture .......... ITU-R BT.1729   (16:9 native, 4:3 centre-cut safe,
+     *                                            SD -> UHD, resolution-dependent detail)
+     *   Bars / PLUGE .......... SMPTE RP 219-1  (== ARIB STD-B28 pattern 1)
+     *   A/V sync + stereo ID .. EBU Tech 3325 / 3304 style
+     *
+     * Everything is generated as SVG at the exact device-pixel resolution of the
+     * viewport, so the high-frequency gratings land on real pixel boundaries.
+     *
+     * Query string flags (bare, order-independent) — e.g. "?2020&sync":
+     *   601 | 601-625 | ebu | 709 | 2020   force the colourimetry (default: auto)
+     *   sync        EBU 3325 sync-flash variant instead of the stereo ID tone
+     *   legal       map 0..100% video to 16..235 so sub-black PLUGE is visible
+     *   srgb        force sRGB output even on a wide-gamut display
+     *   mute        build the picture only, no audio
+     *   nomarkers   omit the safe-area / centre-cut overlay
+     *   noosd       omit every burned-in caption; the identification strip's
+     *               twelfth goes back to the colour bars
+     * --------------------------------------------------------------------- */
+
+    'use strict';
+
+    const P = new URLSearchParams(location.search);
+    const OPT = {
+        sync:      P.has('sync'),
+        legal:     P.has('legal'),
+        forceSrgb: P.has('srgb'),
+        mute:      P.has('mute'),
+        markers:   !P.has('nomarkers'),
+        osd:       !P.has('noosd')
+    };
+
+    /* ===================== colourimetry ===================================== */
+
+    const D65 = [0.3127, 0.3290];
+    const SPACES = {
+        '601':     { id: '601',     label: 'BT.601 525 (SMPTE 170M)', r: [0.630, 0.340], g: [0.310, 0.595], b: [0.155, 0.070], w: D65 },
+        '601-625': { id: '601-625', label: 'BT.601 625 (EBU 3213)',   r: [0.640, 0.330], g: [0.290, 0.600], b: [0.150, 0.060], w: D65 },
+        '709':     { id: '709',     label: 'BT.709',                  r: [0.640, 0.330], g: [0.300, 0.600], b: [0.150, 0.060], w: D65 },
+        '2020':    { id: '2020',    label: 'BT.2020',                 r: [0.708, 0.292], g: [0.170, 0.797], b: [0.131, 0.046], w: D65 }
+    };
+    SPACES.ebu = SPACES['601-625'];
+
+    function mat3mulv(m, v) {
+        return [
+            m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+            m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+            m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2]
+        ];
+    }
+
+    function mat3inv(m) {
+        const [a, b, c] = m[0], [d, e, f] = m[1], [g, h, i] = m[2];
+        const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+        const det = a * A + b * B + c * C;
+        return [
+            [A / det, -(b * i - c * h) / det,  (b * f - c * e) / det],
+            [B / det,  (a * i - c * g) / det, -(a * f - c * d) / det],
+            [C / det, -(a * h - b * g) / det,  (a * e - b * d) / det]
+        ];
+    }
+
+    /* RGB(linear) -> XYZ for a set of primaries + white point (Lindbloom). */
+    function rgbToXyzMatrix(s) {
+        const cols = [s.r, s.g, s.b].map(([x, y]) => [x / y, 1, (1 - x - y) / y]);
+        const M = [0, 1, 2].map(row => cols.map(col => col[row]));
+        const W = [s.w[0] / s.w[1], 1, (1 - s.w[0] - s.w[1]) / s.w[1]];
+        const S = mat3mulv(mat3inv(M), W);
+        return M.map(row => row.map((v, k) => v * S[k]));
+    }
+
+    const M709 = rgbToXyzMatrix(SPACES['709']);      // == sRGB primaries
+    const M709_INV = mat3inv(M709);
+    const M2020_INV = mat3inv(rgbToXyzMatrix(SPACES['2020']));
+
+    const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+    const sgnPow = (v, e) => (v < 0 ? -1 : 1) * Math.pow(Math.abs(v), e);
+
+    /* sRGB EOTF, extended symmetrically so out-of-gamut values survive. */
+    function srgbEotf(v) {
+        const a = Math.abs(v), s = v < 0 ? -1 : 1;
+        return s * (a <= 0.04045 ? a / 12.92 : Math.pow((a + 0.055) / 1.055, 2.4));
+    }
+
+    const A2020 = 1.09929682680944, B2020 = 0.018053968510807;
+    const oetf2020 = l => l < B2020 ? 4.5 * l : A2020 * Math.pow(l, 0.45) - (A2020 - 1);
+
+    /* 0..100% video code -> 0..1 display code. Legal range keeps sub-black alive. */
+    const toCode = v => OPT.legal ? (16 + v * 219) / 255 : v;
+
+    /* Neutral video level. Identical in all three spaces (shared D65 white point),
+     * so it is emitted verbatim — the PLUGE and greyscale stay bit-exact. */
+    function level(v) {
+        const n = Math.round(clamp01(toCode(v)) * 255);
+        return 'rgb(' + n + ',' + n + ',' + n + ')';
+    }
+
+    let SPACE = SPACES['709'];
+    let M_SRC = M709;
+    let WIDE = false;
+
+    /* Chromatic element. Gamut conversion happens in linear light with a matched
+     * transfer in and out, so BT.709 in a BT.709 card is a bit-exact identity and
+     * neutrals never drift. */
+    function chroma(code) {
+        const lin = code.map(v => Math.pow(Math.max(0, v), 2.4));
+        const lin709 = mat3mulv(M709_INV, mat3mulv(M_SRC, lin));
+        const c709 = lin709.map(v => toCode(sgnPow(v, 1 / 2.4)));
+        if (!WIDE) {
+            return 'rgb(' + c709.map(v => Math.round(clamp01(v) * 255)).join(',') + ')';
+        }
+        /* Wide-gamut output: reproduce the same intended display light without
+         * clipping it into sRGB on the way. */
+        const disp = c709.map(srgbEotf);
+        const l2020 = mat3mulv(M2020_INV, mat3mulv(M709, disp));
+        return 'color(rec2020 ' + l2020.map(v => oetf2020(clamp01(v)).toFixed(5)).join(' ') + ')';
+    }
+
+    /* ===================== SVG helpers ====================================== */
+
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.getElementById('card');
+
+    function el(tag, attrs, parent) {
+        const n = document.createElementNS(NS, tag);
+        for (const k in attrs) n.setAttribute(k, attrs[k]);
+        (parent || svg).appendChild(n);
+        return n;
+    }
+
+    function rect(x, y, w, h, fill, parent) {
+        return el('rect', { x: x, y: y, width: Math.max(0, w), height: Math.max(0, h),
+                            fill: fill, 'shape-rendering': 'crispEdges' }, parent);
+    }
+
+    function text(x, y, str, size, fill, anchor, parent) {
+        const t = el('text', {
+            x: x, y: y, 'font-size': size, fill: fill || '#fff',
+            'text-anchor': anchor || 'middle', 'dominant-baseline': 'middle',
+            stroke: '#000', 'stroke-width': Math.max(1, size * 0.14),
+            'paint-order': 'stroke fill', 'letter-spacing': size * 0.02
+        }, parent);
+        t.textContent = str;
+        return t;
+    }
+
+    /* ===================== geometry ========================================= */
+
+    let W = 0, H = 0, dpr = 1;
+    let BAR = 0, COL = null;
+    let clockText = null;
+
+    function build() {
+        dpr = window.devicePixelRatio || 1;
+        W = Math.max(64, Math.round(window.innerWidth * dpr));
+        H = Math.max(64, Math.round(window.innerHeight * dpr));
+
+        /* Auto colourimetry from the real resolution, overridable by the query string. */
+        let key = null;
+        for (const k of ['2020', '709', '601-625', 'ebu', '601']) if (P.has(k)) { key = k; break; }
+        const auto = (W >= 3840 || H >= 2160) ? '2020'
+                   : (W <= 1024 || H <= 576)  ? '601'
+                   : '709';
+        SPACE = SPACES[key || auto];
+        M_SRC = rgbToXyzMatrix(SPACE);
+        WIDE = !OPT.forceSrgb
+            && window.CSS && CSS.supports('color', 'color(rec2020 0 0 0)')
+            && matchMedia('(color-gamut: p3)').matches;
+
+        while (svg.firstChild) svg.removeChild(svg.firstChild);
+        svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+        svg.setAttribute('preserveAspectRatio', 'none');
+
+        /* RP 219 works in twelfths of picture height. The 4:3 centre carries every
+         * element that must survive a centre cut; the flanks are 16:9-only.
+         * Every boundary is snapped to a whole device pixel so abutting blocks
+         * neither overlap nor leave a seam. */
+        const u = H / 12;
+        const CW = Math.round(Math.min(4 * H / 3, W));   // 4:3 centre-cut width
+        const X0 = Math.round((W - CW) / 2), X1 = X0 + CW;
+        BAR = CW / 7;                                    // one colour-bar column
+        COL = i => X0 + Math.round(i * BAR);             // snapped column edge
+
+        /* Row heights in twelfths: 0.5 id + 1.5 detail + 5 bars + 1 + 1 + 3 = 12.
+         * With the OSD off the strip's half-twelfth returns to the bars row. */
+        const idU = OPT.osd ? 0.5 : 0;
+        const edges = [0, idU, idU + 1.5, 7, 8, 9, OPT.sync ? 11 : 12, 12]
+            .map(t => Math.round(t * u));
+        const yId = edges[0], hId = edges[1] - edges[0];
+        const yDet = edges[1], hDet = edges[2] - edges[1];
+        const yBars = edges[2], hBars = edges[3] - edges[2];
+        const yRowB = edges[3], hRowB = edges[4] - edges[3];
+        const yRowC = edges[4], hRowC = edges[5] - edges[4];
+        const yPluge = edges[5], hPluge = edges[6] - edges[5];
+        const ySync = edges[6], hSync = edges[7] - edges[6];
+
+        rect(0, 0, W, H, level(0));
+
+        clockText = sweepBar = flashRect = null;
+        if (OPT.osd) buildIdStrip(yId, hId);
+        buildDetailBand(yDet, hDet, X0, X1);
+        buildBars(yBars, hBars);
+        buildRowB(yRowB, hRowB, X0, X1);
+        buildRowC(yRowC, hRowC, X0, X1);
+        buildPluge(yPluge, hPluge, X0, X1);
+        if (OPT.markers) buildMarkers();
+        if (OPT.sync) buildSyncStrip(ySync, hSync);
+    }
+
+    /* ---- identification strip --------------------------------------------- */
+
+    function gcd(a, b) { return b ? gcd(b, a % b) : a; }
+
+    function buildIdStrip(y, h) {
+        rect(0, y, W, h, level(0));
+        const g = gcd(W, H);
+        const ar = (W / g <= 64 && H / g <= 64) ? (W / g + ':' + H / g)
+                                                : (W / H).toFixed(2) + ':1';
+        const left = W + '×' + H + ' px  DPR ' + dpr.toFixed(2) + '  ' + ar
+                   + '  ' + SPACE.label + '  out:' + (WIDE ? 'rec2020' : 'sRGB')
+                   + '  ' + (OPT.legal ? '16-235 legal range'
+                                       : 'full range (sub-black clipped)');
+        const size = Math.min(h * 0.66, (W * 0.46) / (0.60 * Math.max(left.length, 40)));
+        text(W * 0.012, y + h / 2, left, size, '#fff', 'start');
+        clockText = text(W * 0.988, y + h / 2, '', size, '#fff', 'end');
+    }
+
+    /* ---- BT.1729 resolution / detail band ---------------------------------- */
+
+    function grating(defs, id, period, horizontal) {
+        const on = period / 2;
+        const p = el('pattern', {
+            id: id, patternUnits: 'userSpaceOnUse',
+            width: horizontal ? 8 : period, height: horizontal ? period : 8
+        }, defs);
+        rect(0, 0, horizontal ? 8 : period, horizontal ? period : 8, level(0), p);
+        rect(0, 0, horizontal ? 8 : on, horizontal ? on : 8, level(1), p);
+        return 'url(#' + id + ')';
+    }
+
+    function checkerboard(defs, id) {
+        const p = el('pattern', { id: id, patternUnits: 'userSpaceOnUse', width: 2, height: 2 }, defs);
+        rect(0, 0, 2, 2, level(0), p);
+        rect(0, 0, 1, 1, level(1), p);
+        rect(1, 1, 1, 1, level(1), p);
+        return 'url(#' + id + ')';
+    }
+
+    /* Fresnel zone plate: rings at r = R*sqrt(n/N) thin out towards the rim, so the
+     * outer edge runs into the sampling limit and reveals aliasing / bad scaling. */
+    function zonePlate(cx, cy, R, parent) {
+        const g = el('g', { 'shape-rendering': 'auto' }, parent);
+        rect(cx - R, cy - R, R * 2, R * 2, level(0), g);
+        const N = Math.max(4, Math.min(220, Math.round(R / 3)));
+        const clip = el('clipPath', { id: 'zpclip' }, g);
+        el('circle', { cx: cx, cy: cy, r: R }, clip);
+        const inner = el('g', { 'clip-path': 'url(#zpclip)' }, g);
+        for (let n = N; n >= 1; n--) {
+            el('circle', { cx: cx, cy: cy, r: R * Math.sqrt(n / N),
+                           fill: level(n % 2 ? 1 : 0) }, inner);
+        }
+    }
+
+    function buildDetailBand(y, h, X0, X1) {
+        const defs = el('defs', {});
+        rect(0, y, W, h, level(0.40));
+
+        const labH = OPT.osd ? Math.round(h * 0.26) : 0, gh = h - labH;
+        const cells = [
+            { kind: 'check',                    label: '1px CHECK' },
+            { kind: 'grat', period: 2,          label: 'fs/2  1px' },
+            { kind: 'grat', period: 4,          label: 'fs/4  2px' },
+            { kind: 'grat', period: 6,          label: 'fs/6  3px' },
+            { kind: 'grat', period: 8,          label: 'fs/8  4px' },
+            { kind: 'grat', period: 16,         label: 'fs/16 8px' },
+            { kind: 'zone',                     label: 'ZONE PLATE' }
+        ];
+        const fs = Math.min(labH * 0.72, BAR / (0.62 * 10));
+
+        cells.forEach((c, i) => {
+            const x = COL(i), bw = COL(i + 1) - x;
+            rect(x, y, bw, h, level(0));
+            const pad = Math.max(1, Math.round(bw * 0.03));
+            const cw = bw - pad * 2, ch = gh - pad;
+            if (c.kind === 'check') {
+                rect(x + pad, y + pad, cw, ch, checkerboard(defs, 'chk'));
+            } else if (c.kind === 'grat') {
+                rect(x + pad, y + pad, cw, ch,
+                     grating(defs, 'gv' + c.period, c.period, false));
+            } else {
+                zonePlate(x + bw / 2, y + pad + ch / 2, Math.min(cw, ch) / 2);
+            }
+            if (OPT.osd) text(x + bw / 2, y + gh + labH / 2, c.label, fs, '#fff');
+        });
+
+        /* Flanks (16:9-only) get horizontal gratings — the vertical-resolution check. */
+        const sw = X0;
+        if (sw > 8) {
+            [2, 4, 8].forEach((period, i) => {
+                const by = y + Math.round(i * h / 3);
+                const bh = y + Math.round((i + 1) * h / 3) - by;
+                const pad = Math.max(1, Math.round(bh * 0.10));
+                const f = grating(defs, 'gh' + period, period, true);
+                rect(pad, by + pad, sw - pad * 2, bh - pad * 2, f);
+                rect(X1 + pad, by + pad, sw - pad * 2, bh - pad * 2, f);
+            });
+        }
+    }
+
+    /* ---- RP 219 row a: 75% colour bars, 40% grey flanks --------------------- */
+
+    const BARS75 = [
+        [0.75, 0.75, 0.75], [0.75, 0.75, 0], [0, 0.75, 0.75], [0, 0.75, 0],
+        [0.75, 0, 0.75],    [0.75, 0, 0],    [0, 0, 0.75]
+    ];
+
+    function buildBars(y, h) {
+        rect(0, y, W, h, level(0.40));
+        BARS75.forEach((c, i) => rect(COL(i), y, COL(i + 1) - COL(i), h, chroma(c)));
+    }
+
+    /* ---- RP 219 row b: 100% cyan / 100% white / 75% white / 100% blue ------- */
+
+    function buildRowB(y, h, X0, X1) {
+        rect(0, y, W, h, chroma([0, 1, 1]));
+        rect(X1, y, W - X1, h, chroma([0, 0, 1]));
+        rect(COL(0), y, COL(1) - COL(0), h, level(1));
+        rect(COL(1), y, COL(7) - COL(1), h, level(0.75));
+    }
+
+    /* ---- RP 219 row c: 100% yellow / black / Y-ramp / 100% white / 100% red -- */
+
+    function buildRowC(y, h, X0, X1) {
+        rect(0, y, W, h, chroma([1, 1, 0]));
+        rect(X1, y, W - X1, h, chroma([1, 0, 0]));
+        rect(COL(0), y, COL(1) - COL(0), h, level(0));
+
+        const defs = el('defs', {});
+        const lg = el('linearGradient', { id: 'yramp', x1: '0', y1: '0', x2: '1', y2: '0' }, defs);
+        el('stop', { offset: '0', 'stop-color': level(0) }, lg);
+        el('stop', { offset: '1', 'stop-color': level(1) }, lg);
+        rect(COL(1), y, COL(6) - COL(1), h, 'url(#yramp)');
+
+        rect(COL(6), y, COL(7) - COL(6), h, level(1));
+    }
+
+    /* ---- RP 219 row d: black / white reference and the PLUGE ---------------- */
+
+    function buildPluge(y, h, X0, X1) {
+        rect(0, y, W, h, level(0.15));
+        /* Widths in bar-column units, summing to exactly 7 (ARIB STD-B28
+         * k, g, h, i, j, i, j, i, m = 309, 411, 171, 69, 68, 69, 68, 69, 206
+         * samples at 1920x1080). */
+        const seq = [
+            [1.5,     0],
+            [2,       1],
+            [5 / 6,   0],
+            [1 / 3,  -0.02],
+            [1 / 3,   0],
+            [1 / 3,   0.02],
+            [1 / 3,   0],
+            [1 / 3,   0.04],
+            [1,       0]
+        ];
+        let acc = 0;
+        for (const [wUnits, lvl] of seq) {
+            const x = X0 + Math.round(acc * BAR);
+            acc += wUnits;
+            rect(x, y, X0 + Math.round(acc * BAR) - x, h, level(lvl));
+        }
+    }
+
+    /* ---- BT.1729 centre-cut, safe area and geometry markers ---------------- */
+
+    function marker(d, dash) {
+        el('path', { d: d, fill: 'none', stroke: '#000', 'stroke-width': Math.max(3, H / 360),
+                     'stroke-dasharray': dash || 'none', opacity: 0.55 });
+        el('path', { d: d, fill: 'none', stroke: '#fff', 'stroke-width': Math.max(1, H / 720),
+                     'stroke-dasharray': dash || 'none' });
+    }
+
+    function box(inset, dash) {
+        const x = W * inset, yy = H * inset;
+        marker('M' + x + ' ' + yy + 'H' + (W - x) + 'V' + (H - yy) + 'H' + x + 'Z', dash);
+    }
+
+    function buildMarkers() {
+        const cx = W / 2, cy = H / 2;
+        const dash = Math.max(4, H / 90) + ' ' + Math.max(4, H / 90);
+
+        /* Aspect-ratio centre-cut lines, widest first. Labels are staggered down the
+         * bars row so they stay legible and clear of the detail band. */
+        [[16 / 9, '16:9'], [14 / 9, '14:9'], [4 / 3, '4:3']].forEach(([ar, name], i) => {
+            const w = H * ar;
+            if (w >= W - 1) return;
+            const x = Math.round((W - w) / 2);
+            marker('M' + x + ' 0V' + H + 'M' + (W - x) + ' 0V' + H, dash);
+            if (!OPT.osd) return;
+            const fs = Math.max(8, H / 60);
+            const ly = H * (0.21 + i * 0.045);
+            text(x + fs * 0.5, ly, name, fs, '#fff', 'start');
+            text(W - x - fs * 0.5, ly, name, fs, '#fff', 'end');
+        });
+
+        box(0.035, dash);                 // EBU R95 safe action
+        box(0.05, null);                  // EBU R95 safe title
+        marker('M0.5 0.5H' + (W - 0.5) + 'V' + (H - 0.5) + 'H0.5Z');   // 1px edge
+
+        /* Centre cross plus a true circle — any non-square pixel shows here. */
+        const arm = H / 8, r = H * 0.30;
+        marker('M' + (cx - arm) + ' ' + cy + 'H' + (cx + arm) +
+               'M' + cx + ' ' + (cy - arm) + 'V' + (cy + arm));
+        const c1 = 'M' + (cx - r) + ' ' + cy + 'a' + r + ' ' + r + ' 0 1 0 ' + (2 * r) +
+                   ' 0a' + r + ' ' + r + ' 0 1 0 ' + (-2 * r) + ' 0Z';
+        marker(c1);
+    }
+
+    /* ---- EBU Tech 3325 sweep / flash strip ---------------------------------- */
+
+    let sweepBar = null, flashRect = null;
+
+    function buildSyncStrip(y, h) {
+        rect(0, y, W, h, level(0));
+
+        /* Fixed graticule: the tall centre tick is the coincidence point. */
+        const tick = Math.max(2, Math.round(W / 1000));
+        for (let i = 0; i <= 8; i++) {
+            const tall = (i === 4);
+            rect(Math.round(W * i / 8) - tick / 2, y, tick,
+                 tall ? h : h * 0.28, level(tall ? 1 : 0.4));
+        }
+        if (OPT.osd) {
+            const fs = Math.min(h * 0.30, W / 62);
+            text(W / 2, y + h * 0.82, 'EBU 3325 SYNC — 1 kHz BLIP AT CENTRE', fs, '#c8c8c8');
+        }
+        const barY = OPT.osd ? h * 0.14 : h * 0.20;
+        const barH = OPT.osd ? h * 0.52 : h * 0.60;
+        sweepBar = rect(0, y + barY, Math.max(3, Math.round(W / 240)), barH, level(1));
+
+        /* Drawn last so the one-frame flash covers the whole strip cleanly. */
+        flashRect = rect(0, y, W, h, level(1));
+        flashRect.setAttribute('opacity', '0');
+    }
+
+    /* ===================== audio ============================================ */
+
+    const LEVEL = Math.pow(10, -18 / 20);   // EBU alignment level, -18 dBFS
+    const PERIOD = 2.0;                     // sweep period, seconds
+    const BLIP = 0.040;                     // sync blip length, seconds
+
+    let ctx = null, master = null, gateNext = 0, blipNext = 0, epoch = 0;
+    let audioNote = 'MUTED';
+
+    function initAudio() {
+        if (OPT.mute) return;
+        try {
+            ctx = new (window.AudioContext || window.webkitAudioContext)();
+        } catch (e) { audioNote = 'UNAVAILABLE'; return; }
+
+        master = ctx.createGain();
+        master.gain.value = 1;
+        master.connect(ctx.destination);
+        epoch = ctx.currentTime + 0.2;
+
+        if (OPT.sync) {
+            blipNext = epoch + PERIOD * 0.5;
+            audioNote = 'SYNC FLASH';
+        } else {
+            buildStereoId();
+            gateNext = epoch;
+            audioNote = 'STEREO ID';
+        }
+
+        const kick = () => ctx.resume();
+        ctx.resume();
+        ['pointerdown', 'keydown', 'touchstart'].forEach(ev =>
+            window.addEventListener(ev, kick, { passive: true }));
+    }
+
+    let gateGain = null;
+
+    /* EBU 3304-style identification: continuous 1 kHz left, interrupted right. */
+    function buildStereoId() {
+        const merger = ctx.createChannelMerger(2);
+        merger.connect(master);
+
+        const oscL = ctx.createOscillator();
+        oscL.frequency.value = 1000;
+        const gL = ctx.createGain();
+        gL.gain.value = LEVEL;
+        oscL.connect(gL).connect(merger, 0, 0);
+        oscL.start(epoch);
+
+        const oscR = ctx.createOscillator();
+        oscR.frequency.value = 1000;
+        gateGain = ctx.createGain();
+        gateGain.gain.value = LEVEL;
+        oscR.connect(gateGain).connect(merger, 0, 1);
+        oscR.start(epoch);
+    }
+
+    function scheduleStereoId(until) {
+        while (gateNext < until) {
+            const t = gateNext, g = gateGain.gain;
+            g.setValueAtTime(LEVEL, t);
+            g.setValueAtTime(LEVEL, t + 0.748);
+            g.linearRampToValueAtTime(0, t + 0.750);
+            g.setValueAtTime(0, t + 0.998);
+            g.linearRampToValueAtTime(LEVEL, t + 1.000);
+            gateNext += 1.0;
+        }
+    }
+
+    function outputLatency() {
+        return ctx.outputLatency || ctx.baseLatency || 0;
+    }
+
+    function scheduleBlips(until) {
+        while (blipNext < until) {
+            /* Fire early by the output latency so the sound leaves the speaker at the
+             * same wall-clock instant the flash is presented. */
+            const t = Math.max(ctx.currentTime, blipNext - outputLatency());
+            const o = ctx.createOscillator();
+            o.frequency.value = 1000;
+            const g = ctx.createGain();
+            g.gain.setValueAtTime(0, t);
+            g.gain.linearRampToValueAtTime(LEVEL, t + 0.003);
+            g.gain.setValueAtTime(LEVEL, t + BLIP - 0.003);
+            g.gain.linearRampToValueAtTime(0, t + BLIP);
+            o.connect(g).connect(master);
+            o.start(t);
+            o.stop(t + BLIP + 0.02);
+            blipNext += PERIOD;
+        }
+    }
+
+    /* ===================== run loop ========================================= */
+
+    let frames = 0, refresh = 0, lastTs = 0, deltas = [];
+    let lastAudio = -1, flashFrames = 0, started = performance.now();
+
+    function frame(ts) {
+        requestAnimationFrame(frame);
+        frames++;
+
+        if (lastTs) {
+            const d = ts - lastTs;
+            if (d > 1 && d < 100) {
+                deltas.push(d);
+                if (deltas.length > 90) deltas.shift();
+                const s = deltas.slice().sort((a, b) => a - b);
+                refresh = 1000 / s[s.length >> 1];
+            }
+        }
+        lastTs = ts;
+
+        if (ctx && ctx.state === 'running') {
+            const now = ctx.currentTime, until = now + 1.5;
+            if (OPT.sync) {
+                scheduleBlips(until);
+                const frameDur = refresh ? 1 / refresh : 1 / 60;
+                const shown = now + frameDur;                 // this frame's display time
+                const phase = (((shown - epoch) / PERIOD) % 1 + 1) % 1;
+                if (sweepBar) sweepBar.setAttribute('x', phase * (W - +sweepBar.getAttribute('width')));
+
+                if (lastAudio >= 0) {
+                    const k0 = Math.floor((lastAudio - epoch) / PERIOD - 0.5);
+                    const k1 = Math.floor((shown - epoch) / PERIOD - 0.5);
+                    if (k1 > k0) flashFrames = 1;
+                }
+                lastAudio = shown;
+
+                if (flashRect) {
+                    flashRect.setAttribute('opacity', flashFrames > 0 ? '1' : '0');
+                    if (flashFrames > 0) flashFrames--;
+                }
+            } else if (gateGain) {
+                scheduleStereoId(until);
+            }
+        }
+
+        if (clockText) {
+            const secs = (performance.now() - started) / 1000;
+            const hh = String(Math.floor(secs / 3600)).padStart(2, '0');
+            const mm = String(Math.floor(secs / 60) % 60).padStart(2, '0');
+            const ss = String(Math.floor(secs) % 60).padStart(2, '0');
+            const state = ctx ? (ctx.state === 'running' ? audioNote : 'AUDIO ' + ctx.state.toUpperCase())
+                              : audioNote;
+            clockText.textContent = state + '  ' + (refresh ? refresh.toFixed(2) : '--.--')
+                                  + 'Hz  ' + hh + ':' + mm + ':' + ss + '  f' + frames;
+        }
+    }
+
+    /* ===================== bootstrap ======================================== */
+
+    let resizeTimer = 0;
+    function scheduleRebuild() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(build, 120);
+    }
+    window.addEventListener('resize', scheduleRebuild);
+    try {
+        /* Fires when the window moves to a display with a different pixel ratio. */
+        matchMedia('(resolution: ' + (window.devicePixelRatio || 1) + 'dppx)')
+            .addEventListener('change', scheduleRebuild);
+    } catch (e) { /* older engines: the resize handler is enough */ }
+
+    build();
+    initAudio();
+    requestAnimationFrame(frame);
+    </script>
+</body>
+</html>

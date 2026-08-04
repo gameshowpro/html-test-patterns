@@ -148,6 +148,53 @@ main {
     margin-bottom: 0.5rem;
 }
 
+/* Chip system. The base class carries the shape; each chip type only has to
+   restate the three custom properties. */
+.chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 1.25rem;
+    padding: 0;
+    list-style: none;
+}
+
+.chip {
+    --chip-fg: var(--text-secondary);
+    --chip-bg: rgba(255, 255, 255, 0.05);
+    --chip-border: rgba(255, 255, 255, 0.1);
+
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.6rem;
+    border: 1px solid var(--chip-border);
+    border-radius: 999px;
+    background: var(--chip-bg);
+    color: var(--chip-fg);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    cursor: default;
+}
+
+.chip-key {
+    --chip-fg: #6ee7b7;
+    --chip-bg: rgba(16, 185, 129, 0.12);
+    --chip-border: rgba(16, 185, 129, 0.3);
+}
+
+.chip-flags {
+    --chip-fg: #c7d2fe;
+    --chip-bg: rgba(99, 102, 241, 0.14);
+    --chip-border: rgba(99, 102, 241, 0.35);
+}
+
+.chips + .card-meta {
+    margin-top: 0.9rem;
+}
+
 .card-meta {
     margin-top: 1.5rem;
     display: flex;
@@ -173,6 +220,131 @@ main {
     font-weight: 600;
     letter-spacing: 0.1em;
     color: var(--primary-accent);
+}
+
+.docs {
+    margin-top: 4rem;
+    padding: 2rem;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+
+.docs h2 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin-bottom: 0.75rem;
+}
+
+.docs-intro,
+.docs-note {
+    font-size: 0.95rem;
+    font-weight: 300;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    max-width: 70ch;
+}
+
+.docs-note {
+    margin-top: 1.5rem;
+}
+
+.docs a {
+    color: var(--primary-accent);
+    text-decoration: none;
+}
+
+.docs a:hover {
+    text-decoration: underline;
+}
+
+.flag-table {
+    width: 100%;
+    margin-top: 1.5rem;
+    border-collapse: collapse;
+    font-size: 0.95rem;
+    font-weight: 300;
+    line-height: 1.6;
+}
+
+.flag-table th {
+    text-align: left;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--primary-accent);
+    padding: 0 1rem 0.6rem 0;
+    border-bottom: 1px solid var(--card-border);
+}
+
+.flag-table td {
+    padding: 0.85rem 1rem 0.85rem 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    color: var(--text-secondary);
+    vertical-align: top;
+}
+
+.flag-table td:first-child {
+    white-space: nowrap;
+    width: 1%;
+}
+
+.flag-table tr:last-child td {
+    border-bottom: none;
+}
+
+/* Below this the nowrap flag column starves the description, so stack them. */
+@media (max-width: 700px) {
+    .docs {
+        padding: 1.5rem;
+    }
+
+    .flag-table thead {
+        display: none;
+    }
+
+    .flag-table,
+    .flag-table tbody,
+    .flag-table tr,
+    .flag-table td {
+        display: block;
+        width: auto;
+    }
+
+    .flag-table tr {
+        padding: 0.9rem 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .flag-table tr:last-child {
+        border-bottom: none;
+    }
+
+    .flag-table td {
+        padding: 0;
+        border-bottom: none;
+    }
+
+    .flag-table td:first-child {
+        white-space: normal;
+        width: auto;          /* beats the 1% column width from the wide layout */
+        margin-bottom: 0.4rem;
+    }
+}
+
+.card-desc code,
+.docs code {
+    font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+    font-size: 0.85em;
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.06);
+    color: #c7d2fe;
+    white-space: nowrap;
 }
 
 footer {
