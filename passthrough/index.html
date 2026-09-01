@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Passthrough</title>
+    <link rel="stylesheet" href="../cef-overlay.css">
+    <style>
+        /* Like the test card, this one is deliberately opaque: it shows a
+           captured picture, so anything behind it would be a lie. */
+        html, body {
+            background: #000 !important;
+            background-color: #000 !important;
+            font-family: Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace;
+        }
+
+        #picture {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            display: block;
+            background: #000;
+            object-fit: contain;   /* replaced by ?fill / ?cover */
+        }
+
+        /* The identification strip, in the spirit of the test card's: what was
+           asked for, what was actually granted, and how it is arriving. */
+        #osd {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            display: flex;
+            justify-content: space-between;
+            gap: 2ch;
+            padding: 0.35em 1ch;
+            background: rgba(0, 0, 0, 0.62);
+            color: #fff;
+            font-size: clamp(9px, 1.15vh, 15px);
+            font-weight: 600;
+            line-height: 1.35;
+            white-space: pre;
+            pointer-events: none;
+        }
+        #osd .right { text-align: right; }
+        #osd .warn  { color: #fbbf24; }
+
+        /* Errors and the autoplay prompt. A blank screen on an appliance is
+           indistinguishable from a dead one, so every failure says its name. */
+        #message {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            max-width: min(80ch, 90vw);
+            padding: 1.2em 1.6em;
+            background: rgba(0, 0, 0, 0.82);
+            border: 2px solid #fbbf24;
+            border-radius: 6px;
+            color: #fff;
+            font-size: clamp(11px, 1.7vh, 20px);
+            line-height: 1.5;
+            white-space: pre-wrap;
+            text-align: left;
+        }
+        #message.hidden { display: none; }
+        #message h1 { margin: 0 0 0.6em; font-size: 1.15em; color: #fbbf24; }
+        #message code { color: #7dd3fc; }
+        #message table { border-collapse: collapse; font-size: 0.85em; }
+        #message td { padding: 0.15em 1.2ch 0.15em 0; vertical-align: top; }
+        #message td.dim { color: #9ca3af; }
+    </style>
+</head>
+<body>
+    <video id="picture" playsinline></video>
+    <div id="osd"></div>
+    <div id="message" class="hidden"></div>
+
+    <script>
+    /* ------------------------------------------------------------------------
+     * Passthrough — the one pattern whose picture comes from outside.
+     *
+     * It opens a capture device and puts it on the screen at full frame with
+     * its audio, so a capture card, a converter or a whole signal chain can be
+     * checked with the same page that carries the rest of the patterns. What
+     * it adds over a bare <video> is the identification strip: which device was
+     * actually granted, the format it negotiated, the frame rate really being
+     * delivered, whether the picture is being rescaled, and per-channel audio
+     * peaks — the things that distinguish "working" from "on".
+     *
+     * Query string — bare flags plus three that take a value:
+     *   video=<match>   choose the video input   (label substring, deviceId or index)
+     *   audio=<match>   choose the audio input   (same forms)
+     *   novideo         no picture; audio and its meters only
+     *   noaudio         no audio at all — not even captured
+     *   mute            capture audio and meter it, but do not play it out
+     *   size=1920x1080  demand an exact capture size
+     *   fps=60          demand an exact capture frame rate
+     *   fill | cover    stretch, or crop, instead of fitting inside the frame
+     *   noosd           drop the identification strip
+     *   list            enumerate the inputs and stop
+     *
+     * Defaults worth knowing: the picture is asked for at 1920x1080@60 as an
+     * *ideal*, because the browser's own default is 640x480@30 and a passthrough
+     * that quietly downscales is worse than none; and the audio taken is the
+     * input belonging to the same physical device as the picture, not the
+     * machine's default input, which is usually some other microphone entirely.
+     *
+     * Devices are matched on label by preference, because a deviceId is not a
+     * property of the hardware: it is salted per origin and per browser profile,
+     * so a kiosk that starts from a fresh profile — as Suede's do — gets new
+     * ids every launch while the labels stay put.
+     * --------------------------------------------------------------------- */
+
+    'use strict';
+
+    const P = new URLSearchParams(location.search);
+    const OPT = {
+        /* '' means "the first one"; null means "do not open this at all". */
+        video:  P.has('novideo') ? null : (P.get('video') || ''),
+        audio:  P.has('noaudio') ? null : (P.get('audio') || ''),
+        mute:   P.has('mute'),
+        size:   P.get('size') || '',
+        fps:    P.get('fps') || '',
+        fit:    P.has('fill') ? 'fill' : (P.has('cover') ? 'cover' : 'contain'),
+        osd:    !P.has('noosd'),
+        list:   P.has('list'),
+    };
+
+    const video = document.getElementById('picture');
+    const osd = document.getElementById('osd');
+    const messageBox = document.getElementById('message');
+
+    video.style.objectFit = OPT.fit;
+    video.muted = OPT.mute;
+    if (!OPT.osd) osd.style.display = 'none';
+
+    /* ---- reporting ---------------------------------------------------------- */
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+    }
+
+    function message(title, body) {
+        messageBox.innerHTML = '<h1>' + escapeHtml(title) + '</h1>' + body;
+        messageBox.classList.remove('hidden');
+    }
+
+    function clearMessage() {
+        messageBox.classList.add('hidden');
+    }
+
+    /* Every failure mode here has the same symptom — a black screen — so the
+       diagnosis has to be on the screen, along with what to do about it. */
+    function explain(error) {
+        const name = error && error.name || '';
+        if (name === 'NotAllowedError') {
+            return 'Permission was refused.\n\n'
+                 + 'For an unattended machine, grant it without a prompt: launch with\n'
+                 + '<code>--auto-accept-camera-and-microphone-capture</code>, or set the\n'
+                 + '<code>VideoCaptureAllowedUrls</code> and <code>AudioCaptureAllowedUrls</code>\n'
+                 + 'policies for this origin.';
+        }
+        if (name === 'NotFoundError') {
+            return 'No capture device of that kind is present.';
+        }
+        if (name === 'NotReadableError') {
+            return 'The device is present but could not be opened — usually another\n'
+                 + 'process already holds it, or the browser has no permission on the\n'
+                 + 'device node itself (on Linux, membership of the <code>video</code> group).';
+        }
+        if (name === 'OverconstrainedError') {
+            return 'No format satisfies the request (constraint: <code>'
+                 + escapeHtml(error.constraint || '?') + '</code>).\n'
+                 + 'Drop <code>size</code> / <code>fps</code>, or ask <code>?list</code> what the device offers.';
+        }
+        return escapeHtml((error && error.message) || String(error));
+    }
+
+    /* ---- device selection --------------------------------------------------- */
+
+    async function inputsOf(kind) {
+        const all = await navigator.mediaDevices.enumerateDevices();
+        return all.filter(d => d.kind === kind);
+    }
+
+    /* An index, an exact deviceId, or — the useful one — a case-insensitive
+       substring of the label, so "?video=capture" finds "USB Capture HDMI".
+       Returns how the match was made as well as what matched: which of these
+       worked is the most direct read available on whether the capture
+       permission was actually *persisted*, and the strip reports it. */
+    function pick(list, want) {
+        if (!list.length) return { device: null, how: 'none' };
+        if (want === '') return { device: list[0], how: 'first' };
+        if (/^\d+$/.test(want)) {
+            return { device: list[Number(want)] || null, how: 'index' };
+        }
+        const byId = list.find(d => d.deviceId === want);
+        if (byId) return { device: byId, how: 'id' };
+        const lower = want.toLowerCase();
+        const byLabel = list.find(d => (d.label || '').toLowerCase().includes(lower));
+        return { device: byLabel || null, how: byLabel ? 'label' : 'none' };
+    }
+
+    function sizeConstraint() {
+        const m = /^(\d+)\s*[x×*]\s*(\d+)$/i.exec(OPT.size);
+        return m ? { width: { exact: Number(m[1]) }, height: { exact: Number(m[2]) } } : {};
+    }
+
+    function fpsConstraint() {
+        return /^\d+(\.\d+)?$/.test(OPT.fps) ? { frameRate: { exact: Number(OPT.fps) } } : {};
+    }
+
+    /* Capture, not conversation: the browser's voice processing exists to make
+       a talking head intelligible and it will wreck a line feed — gating it in
+       the quiet parts, riding the gain, and folding stereo to mono on the way.
+       All three are off by default here, and two channels are asked for. */
+    const AUDIO_CLEAN = {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        channelCount: 2,
+    };
+
+    /* The browser's default capture format is 640x480@30. Ask for the format
+       the device is actually carrying — `ideal`, not `exact`, so a device that
+       cannot manage HD still opens at whatever it is nearest to. */
+    const VIDEO_IDEAL = {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 60 },
+    };
+
+    function stop(stream) {
+        if (stream) stream.getTracks().forEach(t => t.stop());
+    }
+
+    function named(name, msg) {
+        const e = new Error(msg);
+        e.name = name;
+        return e;
+    }
+
+    /* enumerateDevices() names devices only once a permission has been
+       *persisted*. --auto-accept-camera-and-microphone-capture does not persist
+       one — it waves each request through and leaves every label and deviceId
+       blank — whereas a policy grant (VideoCaptureAllowedUrls) does, and then
+       the list reads normally. A live track always knows its own label either
+       way, so the strip can still say what is on screen; only *choosing* from
+       the list needs the list to be readable. */
+    function blindList(list) {
+        return list.length > 0 && list.every(d => !d.deviceId);
+    }
+
+    /* Tag a failure with which half of the passthrough it came from: both
+       halves fail with the same handful of error names. */
+    async function getMedia(constraints, kind) {
+        try {
+            return await navigator.mediaDevices.getUserMedia(constraints);
+        } catch (e) {
+            e.kind = kind;
+            throw e;
+        }
+    }
+
+    /* Open the picture. Discovery cannot precede permission — labels are blank
+       until something has been granted — so take a general grant first and
+       re-open only if the choice differs from what it handed over. Re-opening
+       is not free: a capture card renegotiates its link. */
+    async function openVideo() {
+        if (OPT.video === null) return { off: true };
+
+        const base = Object.assign({}, VIDEO_IDEAL, sizeConstraint(), fpsConstraint());
+        let stream = await getMedia({ video: base }, 'video');
+        let track = stream.getTracks()[0];
+        const list = await inputsOf('videoinput');
+
+        if (blindList(list)) {
+            return {
+                track, list, blind: true,
+                note: OPT.video ? 'video=' + OPT.video + ' ignored — device list is blind' : '',
+            };
+        }
+
+        const { device: chosen, how } = pick(list, OPT.video);
+        if (!chosen) {
+            stop(stream);
+            throw named('NoMatchError', 'no video input matches "' + OPT.video
+                                      + '" — ' + list.length + ' present');
+        }
+        if (chosen.deviceId !== track.getSettings().deviceId) {
+            stop(stream);
+            stream = await getMedia(
+                { video: Object.assign({ deviceId: { exact: chosen.deviceId } }, base) }, 'video');
+            track = stream.getTracks()[0];
+        }
+        return { track, list, chosen, how };
+    }
+
+    /* Open the sound. With nothing named, take the input belonging to the same
+       physical device as the picture rather than the machine's default input —
+       which is whatever it happens to listen to, a headset or a webcam mic, and
+       would be passed through in place of the signal under test. groupId ties
+       the two halves of one device together, and being a property of a live
+       track it survives the blind-list case that defeats matching by label. */
+    async function openAudio(videoTrack) {
+        if (OPT.audio === null) return { off: true };
+
+        const list = await inputsOf('audioinput');
+        const blind = blindList(list);
+
+        if (OPT.audio === '' && videoTrack) {
+            const groupId = videoTrack.getSettings().groupId;
+            if (groupId) {
+                try {
+                    const s = await getMedia(
+                        { audio: Object.assign({ groupId: { exact: groupId } }, AUDIO_CLEAN) }, 'audio');
+                    return {
+                        track: s.getTracks()[0], list, blind,
+                        sameDevice: true, how: 'same device',
+                    };
+                } catch (e) {
+                    /* The picture's device has no audio side; fall back below. */
+                }
+            }
+        }
+
+        let stream = await getMedia({ audio: AUDIO_CLEAN }, 'audio');
+        let track = stream.getTracks()[0];
+
+        if (blind) {
+            return {
+                track, list, blind,
+                note: OPT.audio ? 'audio=' + OPT.audio + ' ignored — device list is blind' : '',
+            };
+        }
+
+        const { device: chosen, how } = pick(list, OPT.audio);
+        if (!chosen) {
+            stop(stream);
+            throw named('NoMatchError', 'no audio input matches "' + OPT.audio
+                                      + '" — ' + list.length + ' present');
+        }
+        if (chosen.deviceId !== track.getSettings().deviceId) {
+            stop(stream);
+            stream = await getMedia(
+                { audio: Object.assign({ deviceId: { exact: chosen.deviceId } }, AUDIO_CLEAN) }, 'audio');
+            track = stream.getTracks()[0];
+        }
+        return { track, list, chosen, how };
+    }
+
+    /* ---- audio metering ----------------------------------------------------- */
+
+    let actx = null, analysers = [], meterData = [];
+
+    function meter(track) {
+        try {
+            actx = new (window.AudioContext || window.webkitAudioContext)();
+            const source = actx.createMediaStreamSource(new MediaStream([track]));
+            const channels = Math.max(1, Math.min(2, track.getSettings().channelCount || 2));
+            const splitter = actx.createChannelSplitter(channels);
+            source.connect(splitter);
+            /* Nothing is connected to the destination: the <video> element does
+               the playing. Metering here as well would double it. */
+            analysers = [];
+            for (let c = 0; c < channels; c++) {
+                const a = actx.createAnalyser();
+                a.fftSize = 2048;
+                splitter.connect(a, c);
+                analysers.push(a);
+                meterData.push(new Float32Array(a.fftSize));
+            }
+        } catch (e) {
+            analysers = [];
+        }
+    }
+
+    function peaks() {
+        return analysers.map((a, i) => {
+            a.getFloatTimeDomainData(meterData[i]);
+            let peak = 0;
+            for (let n = 0; n < meterData[i].length; n++) {
+                const v = Math.abs(meterData[i][n]);
+                if (v > peak) peak = v;
+            }
+            return peak > 0 ? 20 * Math.log10(peak) : -Infinity;
+        });
+    }
+
+    function dbLabel(db) {
+        if (db === -Infinity) return ' -inf';
+        return (db >= 0 ? ' ' : '') + db.toFixed(1);
+    }
+
+    /* ---- delivered frame rate ----------------------------------------------- */
+
+    /* getSettings() reports the rate that was negotiated, which is a promise
+       rather than an observation. This is what actually arrives. */
+    let presented = 0, windowStart = 0, windowFrames = 0, measured = 0;
+
+    function countFrame(now) {
+        presented++;
+        windowFrames++;
+        if (!windowStart) windowStart = now;
+        else if (now - windowStart >= 1000) {
+            measured = (windowFrames * 1000) / (now - windowStart);
+            windowStart = now;
+            windowFrames = 0;
+        }
+        if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(countFrame);
+    }
+
+    /* ---- the identification strip ------------------------------------------- */
+
+    let state = { video: null, audio: null, note: '' };
+    const started = performance.now();
+
+    /* Whether the picture reaches the panel at its own size. A capture rig that
+       is being rescaled is not testing what its operator thinks it is. */
+    function scaleNote(w, h) {
+        const dpr = window.devicePixelRatio || 1;
+        const bw = video.clientWidth * dpr, bh = video.clientHeight * dpr;
+        if (!w || !h || !bw || !bh) return '';
+        const s = OPT.fit === 'cover' ? Math.max(bw / w, bh / h)
+                : OPT.fit === 'fill'  ? Math.min(bw / w, bh / h)   /* nominal; aspect is broken anyway */
+                                      : Math.min(bw / w, bh / h);
+        if (OPT.fit === 'fill' && (Math.abs(bw / w - bh / h) > 0.001)) return 'stretched';
+        return Math.abs(s - 1) < 0.005 ? '1:1' : '×' + s.toFixed(3);
+    }
+
+    function renderOsd() {
+        if (!OPT.osd) return;
+
+        const left = [];
+        if (state.video) {
+            const s = state.video.track.getSettings();
+            const live = state.video.track.readyState === 'live';
+            left.push(state.video.track.label
+                    || (state.video.chosen && state.video.chosen.label) || '(unnamed video input)');
+            left.push((s.width || '?') + '×' + (s.height || '?')
+                    + ' @' + (s.frameRate ? s.frameRate.toFixed(2) : '?') + 'Hz');
+            left.push('got ' + (measured ? measured.toFixed(2) : '--.--') + 'Hz');
+            const scale = scaleNote(s.width, s.height);
+            if (scale) left.push(scale);
+            /* The most direct read there is on whether the capture permission
+               was persisted: a blind list means labels and ids came back
+               empty, so nothing can be selected by name. */
+            left.push(state.video.blind
+                ? 'list:blind'
+                : 'list:' + state.video.list.length + ' by:' + (state.video.how || '?'));
+            if (!live) left.push('ENDED');
+        } else if (OPT.video === null) {
+            left.push('video off');
+        }
+
+        const right = [];
+        if (state.audio) {
+            const s = state.audio.track.getSettings();
+            right.push(state.audio.track.label
+                     || (state.audio.chosen && state.audio.chosen.label) || '(unnamed audio input)');
+            right.push((s.channelCount || '?') + 'ch '
+                     + ((s.sampleRate || (actx && actx.sampleRate) || 0) / 1000).toFixed(1) + 'kHz');
+            if (state.audio.how) right.unshift('by:' + state.audio.how);
+            const p = peaks();
+            if (p.length) right.push('peak ' + p.map(dbLabel).join(' / ') + ' dBFS');
+            if (OPT.mute) right.push('MUTED');
+        } else if (OPT.audio === null) {
+            right.push('audio off');
+        }
+
+        const secs = (performance.now() - started) / 1000;
+        const hh = String(Math.floor(secs / 3600)).padStart(2, '0');
+        const mm = String(Math.floor(secs / 60) % 60).padStart(2, '0');
+        const ss = String(Math.floor(secs) % 60).padStart(2, '0');
+        right.push(hh + ':' + mm + ':' + ss);
+        if (presented) right.push('f' + presented);
+
+        const dropped = video.getVideoPlaybackQuality
+            ? video.getVideoPlaybackQuality().droppedVideoFrames : 0;
+        if (dropped) right.push('dropped ' + dropped);
+
+        osd.innerHTML = '<div class="' + (state.note ? 'warn' : '') + '">'
+                      + escapeHtml(left.join('  ') + (state.note ? '  ' + state.note : '')) + '</div>'
+                      + '<div class="right">' + escapeHtml(right.join('  ')) + '</div>';
+    }
+
+    /* ---- ?list -------------------------------------------------------------- */
+
+    async function listDevices() {
+        /* A grant first, or every label comes back empty — which is exactly the
+           state this mode exists to get the operator out of. */
+        let probe = null;
+        try {
+            probe = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        } catch (e) {
+            try { probe = await navigator.mediaDevices.getUserMedia({ video: true }); }
+            catch (e2) {
+                try { probe = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+                catch (e3) { /* labels will be blank; still worth listing the ids */ }
+            }
+        }
+        const all = await navigator.mediaDevices.enumerateDevices();
+        stop(probe);
+
+        const rows = ['videoinput', 'audioinput'].map(kind => {
+            const list = all.filter(d => d.kind === kind);
+            const head = '<tr><td class="dim" colspan="3">'
+                       + (kind === 'videoinput' ? 'video' : 'audio') + '</td></tr>';
+            if (!list.length) return head + '<tr><td class="dim">—</td><td>none</td></tr>';
+            return head + list.map((d, i) =>
+                '<tr><td class="dim">' + i + '</td><td>' + escapeHtml(d.label || '(no label — not granted)')
+                + '</td><td class="dim">' + escapeHtml(d.deviceId.slice(0, 16))
+                + (d.deviceId.length > 16 ? '…' : '') + '</td></tr>').join('');
+        }).join('');
+
+        const blind = blindList(all.filter(d => d.kind !== 'audiooutput'));
+        message('Capture inputs', '<table>' + rows + '</table>'
+              + (blind
+                  ? '<p>Every entry is blank, so nothing here can be selected by name. That is what '
+                  + 'a capture permission which was never <em>persisted</em> looks like: '
+                  + '<code>--auto-accept-camera-and-microphone-capture</code> and '
+                  + '<code>--use-fake-ui-for-media-stream</code> both wave each request through '
+                  + 'without recording a grant. Use the <code>VideoCaptureAllowedUrls</code> and '
+                  + '<code>AudioCaptureAllowedUrls</code> policies instead, or allow the site once '
+                  + 'by hand, and the list fills in.</p>'
+                  : '')
+              + '<p>Select one with <code>?video=</code> or <code>?audio=</code> — an index, a '
+              + 'deviceId, or any part of the label. Labels are the durable choice: deviceIds are '
+              + 'salted per profile and change whenever the profile does.</p>');
+    }
+
+    /* ---- start, and keep going ---------------------------------------------- */
+
+    let restartTimer = 0;
+
+    function scheduleRestart(why) {
+        state.note = why;
+        renderOsd();
+        clearTimeout(restartTimer);
+        restartTimer = setTimeout(start, 700);
+    }
+
+    function watch(track, kind) {
+        /* Unplugging the source ends the track; nothing else tells the page. */
+        track.addEventListener('ended', () => scheduleRestart(kind + ' input ended — reopening'));
+    }
+
+    async function start() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            message('No capture API',
+                '<code>navigator.mediaDevices.getUserMedia</code> is not available here.\n\n'
+              + 'It exists only in a secure context. This page is at <code>'
+              + escapeHtml(location.origin || location.protocol) + '</code>; serve it over '
+              + '<code>https://</code>, from <code>localhost</code>, or pass Chromium\n'
+              + '<code>--unsafely-treat-insecure-origin-as-secure=&lt;origin&gt;</code>.');
+            return;
+        }
+
+        if (OPT.list) return listDevices();
+
+        /* Tracks from a previous attempt are dropped, not reused: a device that
+           went away and came back is a different open file. */
+        if (video.srcObject) stop(video.srcObject);
+        video.srcObject = null;
+
+        let opened = { video: { off: true }, audio: { off: true } };
+        try {
+            opened.video = await openVideo();
+        } catch (e) {
+            message('Could not open the video input', explain(e));
+            scheduleRestart('retrying');
+            return;
+        }
+        /* Sound failing is not worth throwing the picture away for: say so on
+           the strip and carry on with what did open. */
+        let audioNote = '';
+        try {
+            opened.audio = await openAudio(opened.video.track || null);
+        } catch (e) {
+            audioNote = 'audio unavailable (' + (e.name || 'error') + ')';
+        }
+
+        state.video = opened.video.track ? opened.video : null;
+        state.audio = opened.audio.track ? opened.audio : null;
+        state.note = [opened.video.note, opened.audio.note, audioNote]
+            .filter(Boolean).join('  ');
+
+        if (!state.video && !state.audio) {
+            message('Nothing to pass through',
+                'Both <code>novideo</code> and <code>noaudio</code> were given.');
+            return;
+        }
+        clearMessage();
+
+        const stream = new MediaStream();
+        if (state.video) { stream.addTrack(state.video.track); watch(state.video.track, 'video'); }
+        if (state.audio) { stream.addTrack(state.audio.track); watch(state.audio.track, 'audio'); }
+        video.srcObject = stream;
+
+        if (state.audio) meter(state.audio.track);
+        if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(countFrame);
+
+        play();
+    }
+
+    /* Autoplay with sound is refused unless the page has been granted it —
+       which a kiosk does with --autoplay-policy=no-user-gesture-required. Where
+       it has not been, any gesture will do, as the test card also arranges. */
+    function play() {
+        video.play().then(() => {
+            if (actx && actx.state === 'suspended') actx.resume();
+        }).catch(() => {
+            message('Click to start',
+                'Autoplay with sound was refused. Click, tap or press a key.\n\n'
+              + 'Unattended, launch Chromium with '
+              + '<code>--autoplay-policy=no-user-gesture-required</code>.');
+            const go = () => {
+                clearMessage();
+                video.play().catch(() => {});
+                if (actx && actx.state === 'suspended') actx.resume();
+                window.removeEventListener('pointerdown', go);
+                window.removeEventListener('keydown', go);
+            };
+            window.addEventListener('pointerdown', go);
+            window.addEventListener('keydown', go);
+        });
+    }
+
+    /* A capture card replugged on another port is a new device: re-resolve
+       rather than waiting for a track that will never come back. */
+    if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+        navigator.mediaDevices.addEventListener('devicechange', () => {
+            if (!state.video && !state.audio) scheduleRestart('device change');
+        });
+    }
+
+    setInterval(renderOsd, 250);
+    start();
+    </script>
+</body>
+</html>

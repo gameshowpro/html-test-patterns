@@ -115,3 +115,73 @@ otherwise any click or keypress starts them, and the identification strip shows 
 - **Sync flash** (`sync`): a 40 ms 1 kHz blip every 2 s, scheduled on the audio clock and issued
   early by the reported output latency so it leaves the speaker as the flash is presented. The
   sweep position is derived from the same clock, one frame ahead, so bar, flash and blip coincide.
+
+# Passthrough
+
+[`passthrough/`](passthrough/index.html) is the one pattern whose picture comes from outside: it
+opens a capture device and puts it on the screen at full frame with its own audio, so a capture
+card, a converter or a whole signal chain can be checked with the same page that carries the rest
+of the patterns.
+
+What it adds over a bare `<video>` is the identification strip: which device was actually granted,
+the format it negotiated, the frame rate really being delivered, whether the picture is being
+rescaled on the way to the panel, and per-channel audio peaks — the things that distinguish
+"working" from merely "on".
+
+```
+USB Capture HDMI  1920×1080 @60.00Hz  got 59.99Hz  ×0.868
+                    USB Capture HDMI Analog Stereo  2ch 48.0kHz  peak -41.8 / -inf dBFS  00:00:08  f472
+```
+
+## Defaults
+
+- **Format.** The picture is asked for at 1920×1080@60 as an *ideal*, because the browser's own
+  default is 640×480@30 and a passthrough that quietly downscales is worse than none. A device that
+  cannot manage HD still opens, at whatever it is nearest to.
+- **Audio follows the picture.** With no `audio=` given, the input taken is the one belonging to the
+  same physical device as the video — matched on `groupId`, which ties the two halves of one device
+  together. The alternative is the machine's *default* input, which is whatever it happens to listen
+  to: a headset, a webcam mic, anything but the signal under test.
+
+## Query string
+
+Bare flags as elsewhere, plus four that take a value — e.g. `passthrough/index.html?video=capture&mute`.
+
+| Flag | Effect |
+| --- | --- |
+| `video=`, `audio=` | Choose an input: a case-insensitive part of its label, an exact deviceId, or a 0-based index. |
+| `size=`, `fps=` | Demand an exact capture format, e.g. `size=1920x1080`, `fps=60`. |
+| `novideo`, `noaudio` | Leave that half unopened. |
+| `mute` | Capture the audio and meter it, but do not play it out. |
+| `fill`, `cover` | Stretch to the viewport, or crop to it, instead of fitting the whole frame inside. |
+| `noosd` | Drop the identification strip. |
+| `list` | Enumerate the inputs and stop. |
+
+## Choosing a device, and why by label
+
+A `deviceId` is not a property of the hardware. It is salted per origin and per browser profile, so
+a kiosk that starts from a fresh profile — as Suede's do — gets new ids on every launch while the
+labels stay put. Match on the label.
+
+There is a catch worth knowing before relying on it. `enumerateDevices()` only names devices once a
+capture permission has been **persisted**, and the two Chromium flags that get a kiosk past the
+permission prompt do not persist one:
+
+| Grant | Prompt suppressed | Labels and deviceIds readable |
+| --- | --- | --- |
+| `--auto-accept-camera-and-microphone-capture` | yes | **no** — every entry blank |
+| `--use-fake-ui-for-media-stream` | yes | **no** — every entry blank |
+| `VideoCaptureAllowedUrls` / `AudioCaptureAllowedUrls` policy | yes | yes |
+| Allowed once by hand | after the first time | yes |
+
+Under a blind list `video=` and `audio=` have nothing to match on; the page says so on the strip and
+carries on with the general grant rather than failing. `?list` says the same at more length. A live
+track always knows its own `label` regardless, which is why the strip can still name what is on
+screen. For an unattended machine, prefer the policies.
+
+## Requirements
+
+`getUserMedia` exists only in a secure context: serve over `https://`, from `localhost`, or pass
+Chromium `--unsafely-treat-insecure-origin-as-secure=<origin>`. Playing captured audio without a
+gesture needs `--autoplay-policy=no-user-gesture-required`; without it the page asks for a click.
+On Linux the browser also needs access to the device node itself — membership of the `video` group.

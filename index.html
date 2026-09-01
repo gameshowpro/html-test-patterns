@@ -33,6 +33,23 @@
             </div>
 
             <div class="card">
+                <a href="passthrough/index.html" class="card-link">
+                    <div class="card-title">
+                        Passthrough
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"></line><polyline points="7 7 17 7 17 17"></polyline></svg>
+                    </div>
+                    <p class="card-desc">The one pattern whose picture comes from outside: a capture device, full frame, with its own audio. The strip names the device, the format it negotiated, the frame rate actually arriving and the per-channel peaks. Opaque by design.</p>
+                </a>
+                <ul class="chips">
+                    <li class="chip chip-flags" title="Behaviour is configurable with query-string flags">flags</li>
+                </ul>
+                <div class="card-meta">
+                    <span class="card-tag">Custom / Capture</span>
+                    <span class="card-author">getUserMedia</span>
+                </div>
+            </div>
+
+            <div class="card">
                 <a href="dark-city-ambience/index.html" class="card-link">
                     <div class="card-title">
                         Dark City Ambience
@@ -216,6 +233,63 @@
                 click or keypress starts it, and the identification strip reports the audio state.
                 The default ident is a continuous 1&nbsp;kHz tone on the left channel against a
                 1&nbsp;kHz tone on the right interrupted once a second.
+            </p>
+        </section>
+
+        <section class="docs">
+            <h2>Passthrough options</h2>
+            <p class="docs-intro">
+                Bare flags as above, plus four that take a value &mdash; for example
+                <a href="passthrough/index.html?video=capture&amp;mute"><code>?video=capture&amp;mute</code></a>.
+                With nothing specified it opens the first video input at 1920&times;1080@60 and takes the
+                audio belonging to that same device.
+            </p>
+            <table class="flag-table">
+                <thead>
+                    <tr><th>Flag</th><th>Effect</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>video=</code> <code>audio=</code></td>
+                        <td>Choose an input: a case-insensitive part of its label, an exact deviceId, or a 0-based index. Prefer the label &mdash; a deviceId is salted per browser profile and changes whenever the profile does, which for a kiosk is every launch.</td>
+                    </tr>
+                    <tr>
+                        <td><code>size=</code> <code>fps=</code></td>
+                        <td>Demand an exact capture format, e.g. <code>size=1920x1080</code>, <code>fps=60</code>. Without them the format is an <em>ideal</em> of 1920&times;1080@60, so a device that cannot manage that still opens at its nearest.</td>
+                    </tr>
+                    <tr>
+                        <td><code>novideo</code> <code>noaudio</code></td>
+                        <td>Leave that half unopened. <code>novideo</code> gives meters with no picture; <code>noaudio</code> captures no sound at all.</td>
+                    </tr>
+                    <tr>
+                        <td><code>mute</code></td>
+                        <td>Capture the audio and meter it, but do not play it out &mdash; the flag to reach for when the capture and the speakers share a room.</td>
+                    </tr>
+                    <tr>
+                        <td><code>fill</code> <code>cover</code></td>
+                        <td>Stretch to the viewport, or crop to it. The default fits the whole frame inside, pillar- or letter-boxed in black.</td>
+                    </tr>
+                    <tr>
+                        <td><code>noosd</code></td>
+                        <td>Drop the identification strip, leaving nothing over the picture.</td>
+                    </tr>
+                    <tr>
+                        <td><code>list</code></td>
+                        <td>Enumerate the inputs and stop, so a label can be read off before it is used to select one.</td>
+                    </tr>
+                </tbody>
+            </table>
+            <p class="docs-note">
+                <code>getUserMedia</code> exists only in a secure context, so this page needs
+                <code>https://</code>, <code>localhost</code>, or Chromium's
+                <code>--unsafely-treat-insecure-origin-as-secure</code>. Note also that the two flags
+                which wave a capture prompt through &mdash;
+                <code>--auto-accept-camera-and-microphone-capture</code> and
+                <code>--use-fake-ui-for-media-stream</code> &mdash; never <em>persist</em> a grant, and
+                without a persisted grant every device label and deviceId reads back blank, leaving
+                <code>video=</code> and <code>audio=</code> nothing to match on. The
+                <code>VideoCaptureAllowedUrls</code> and <code>AudioCaptureAllowedUrls</code> policies do
+                persist, and are the better choice for an unattended machine.
             </p>
         </section>
     </main>
