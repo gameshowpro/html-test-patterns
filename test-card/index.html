@@ -476,7 +476,11 @@
 
     /* ===================== audio ============================================ */
 
-    const LEVEL = Math.pow(10, -18 / 20);   // EBU alignment level, -18 dBFS
+    /* EBU R68 alignment level: -18 dBFS *RMS* for a 1 kHz sine, which is -15
+       dBFS peak. These gains are applied to an OscillatorNode, whose output is
+       a +/-1 sine, so the gain is the peak — hence the sqrt(2). Setting it to
+       the RMS figure directly, as this once did, lands 3 dB low. */
+    const LEVEL = Math.SQRT2 * Math.pow(10, -18 / 20);   // -18 dBFS RMS, -15 dBFS peak
     const PERIOD = 2.0;                     // sweep period, seconds
     const BLIP = 0.040;                     // sync blip length, seconds
 
