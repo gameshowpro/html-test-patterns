@@ -156,8 +156,12 @@
        diagnosis has to be on the screen, along with what to do about it. */
     function explain(error) {
         const name = error && error.name || '';
-        if (name === 'NotAllowedError') {
-            return 'Permission was refused.\n\n'
+        if (name === 'NotAllowedError' || name === 'SecurityError') {
+            return 'Permission was refused, so nothing will be opened.\n\n'
+                 + 'This page will not ask again — repeating the request is how a\n'
+                 + 'refusal turns into a dialog you cannot get out of. To change the\n'
+                 + 'answer, use the camera icon in the address bar (or the site\n'
+                 + 'settings for this origin) and reload.\n\n'
                  + 'For an unattended machine, grant it without a prompt: launch with\n'
                  + '<code>--auto-accept-camera-and-microphone-capture</code>, or set the\n'
                  + '<code>VideoCaptureAllowedUrls</code> and <code>AudioCaptureAllowedUrls</code>\n'
@@ -265,91 +269,148 @@
         }
     }
 
-    /* Open the picture. Discovery cannot precede permission — labels are blank
-       until something has been granted — so take a general grant first and
-       re-open only if the choice differs from what it handed over. Re-opening
-       is not free: a capture card renegotiates its link. */
-    async function openVideo() {
-        if (OPT.video === null) return { off: true };
+    /* A refusal is a decision, not a fault. Retrying one re-prompts, and
+       retrying on a timer prompts forever — which is what turns "no thanks"
+       into a dialog the operator cannot escape. */
+    function isRefusal(error) {
+        return !!error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
+    }
 
+    /* Open both halves, in as few requests as possible.
+     *
+     * Where the browser prompts, it prompts once per getUserMedia call, so
+     * asking for the camera and the microphone separately means two dialogs —
+     * and answering the second one "block" leaves the first granted, a state
+     * this page used to respond to by asking again. One combined request is a
+     * single dialog with a single answer. Everything after it is a refinement
+     * that re-uses the permission already given, so it raises no further
+     * prompt.
+     */
+    async function openInputs() {
+        const wantVideo = OPT.video !== null;
+        const wantAudio = OPT.audio !== null;
         const base = Object.assign({}, VIDEO_IDEAL, sizeConstraint(), fpsConstraint());
-        let stream = await getMedia({ video: base }, 'video');
-        let track = stream.getTracks()[0];
-        const list = await inputsOf('videoinput');
 
+        let videoTrack = null, audioTrack = null, audioNote = '';
+        if (wantVideo && wantAudio) {
+            try {
+                const both = await getMedia({ video: base, audio: AUDIO_CLEAN }, 'capture');
+                videoTrack = both.getVideoTracks()[0] || null;
+                audioTrack = both.getAudioTracks()[0] || null;
+            } catch (error) {
+                // A refusal covers both halves; anything else may be one
+                // device missing or busy, so try them apart.
+                if (isRefusal(error)) throw error;
+            }
+        }
+        if (wantVideo && !videoTrack) {
+            videoTrack = (await getMedia({ video: base }, 'video')).getVideoTracks()[0] || null;
+        }
+        if (wantAudio && !audioTrack) {
+            try {
+                audioTrack = (await getMedia({ audio: AUDIO_CLEAN }, 'audio')).getAudioTracks()[0] || null;
+            } catch (error) {
+                if (isRefusal(error)) throw error;
+                audioNote = 'audio unavailable (' + (error.name || 'error') + ')';
+            }
+        }
+
+        const video = videoTrack ? await refineVideo(videoTrack, base) : { off: true };
+        const audio = audioTrack
+            ? await refineAudio(audioTrack, video.track || null)
+            : { off: true, note: audioNote };
+        if (audioNote && !audio.note) audio.note = audioNote;
+        return { video, audio };
+    }
+
+    /* Swap in the device that was actually asked for, if the general grant
+       handed over a different one. The replacement is opened *before* the
+       incumbent is stopped: closing a camera and immediately opening another
+       races the driver on some systems, and a failure here would otherwise
+       leave the page with nothing when it had something. */
+    async function refineVideo(track, base) {
+        const list = await inputsOf('videoinput');
         if (blindList(list)) {
             return {
-                track, list, blind: true,
+                track, list, blind: true, how: 'blind',
                 note: OPT.video ? 'video=' + OPT.video + ' ignored — device list is blind' : '',
             };
         }
-
-        const { device: chosen, how } = pick(list, OPT.video);
-        if (!chosen) {
-            stop(stream);
+        // With nothing named, keep what was granted rather than forcing the
+        // first enumerated device: the browser's own default is the better
+        // guess, and not re-opening a camera is one fewer chance to trip over
+        // a driver that dislikes being opened twice.
+        if (OPT.video === '') {
+            const granted = list.find(d => d.deviceId === track.getSettings().deviceId);
+            return { track, list, chosen: granted, how: 'granted' };
+        }
+        const { device, how } = pick(list, OPT.video);
+        if (!device) {
+            track.stop();
             throw named('NoMatchError', 'no video input matches "' + OPT.video
                                       + '" — ' + list.length + ' present');
         }
-        if (chosen.deviceId !== track.getSettings().deviceId) {
-            stop(stream);
-            stream = await getMedia(
-                { video: Object.assign({ deviceId: { exact: chosen.deviceId } }, base) }, 'video');
-            track = stream.getTracks()[0];
+        if (device.deviceId === track.getSettings().deviceId) {
+            return { track, list, chosen: device, how };
         }
-        return { track, list, chosen, how };
+        const next = await getMedia(
+            { video: Object.assign({ deviceId: { exact: device.deviceId } }, base) }, 'video');
+        track.stop();
+        return { track: next.getVideoTracks()[0], list, chosen: device, how };
     }
 
-    /* Open the sound. With nothing named, take the input belonging to the same
-       physical device as the picture rather than the machine's default input —
-       which is whatever it happens to listen to, a headset or a webcam mic, and
-       would be passed through in place of the signal under test. groupId ties
-       the two halves of one device together, and being a property of a live
-       track it survives the blind-list case that defeats matching by label. */
-    async function openAudio(videoTrack) {
-        if (OPT.audio === null) return { off: true };
-
+    /* With nothing named, prefer the input belonging to the same physical
+       device as the picture: the default input is whatever the machine
+       listens to — a headset, a laptop's own microphone — and passing that
+       through in place of the signal under test is a silent wrong answer.
+       groupId ties the two halves of one device together and, being a
+       property of a live track, survives the blind-list case. */
+    async function refineAudio(track, videoTrack) {
         const list = await inputsOf('audioinput');
         const blind = blindList(list);
 
         if (OPT.audio === '' && videoTrack) {
             const groupId = videoTrack.getSettings().groupId;
-            if (groupId) {
+            if (groupId && track.getSettings().groupId !== groupId) {
                 try {
-                    const s = await getMedia(
+                    const matched = await getMedia(
                         { audio: Object.assign({ groupId: { exact: groupId } }, AUDIO_CLEAN) }, 'audio');
+                    track.stop();
                     return {
-                        track: s.getTracks()[0], list, blind,
+                        track: matched.getAudioTracks()[0], list, blind,
                         sameDevice: true, how: 'same device',
                     };
-                } catch (e) {
-                    /* The picture's device has no audio side; fall back below. */
+                } catch (error) {
+                    /* That device has no audio side; keep what was granted. */
                 }
+            } else if (groupId) {
+                return { track, list, blind, sameDevice: true, how: 'same device' };
             }
         }
 
-        let stream = await getMedia({ audio: AUDIO_CLEAN }, 'audio');
-        let track = stream.getTracks()[0];
-
         if (blind) {
             return {
-                track, list, blind,
+                track, list, blind, how: 'blind',
                 note: OPT.audio ? 'audio=' + OPT.audio + ' ignored — device list is blind' : '',
             };
         }
-
-        const { device: chosen, how } = pick(list, OPT.audio);
-        if (!chosen) {
-            stop(stream);
+        if (OPT.audio === '') {
+            const granted = list.find(d => d.deviceId === track.getSettings().deviceId);
+            return { track, list, chosen: granted, how: 'granted' };
+        }
+        const { device, how } = pick(list, OPT.audio);
+        if (!device) {
+            track.stop();
             throw named('NoMatchError', 'no audio input matches "' + OPT.audio
                                       + '" — ' + list.length + ' present');
         }
-        if (chosen.deviceId !== track.getSettings().deviceId) {
-            stop(stream);
-            stream = await getMedia(
-                { audio: Object.assign({ deviceId: { exact: chosen.deviceId } }, AUDIO_CLEAN) }, 'audio');
-            track = stream.getTracks()[0];
+        if (device.deviceId === track.getSettings().deviceId) {
+            return { track, list, chosen: device, how };
         }
-        return { track, list, chosen, how };
+        const next = await getMedia(
+            { audio: Object.assign({ deviceId: { exact: device.deviceId } }, AUDIO_CLEAN) }, 'audio');
+        track.stop();
+        return { track: next.getAudioTracks()[0], list, chosen: device, how };
     }
 
     /* ---- audio metering ----------------------------------------------------- */
@@ -399,9 +460,14 @@
 
     /* getSettings() reports the rate that was negotiated, which is a promise
        rather than an observation. This is what actually arrives. */
-    let presented = 0, windowStart = 0, windowFrames = 0, measured = 0;
+    let presented = 0, windowStart = 0, windowFrames = 0, measured = 0, openedAt = 0;
+    let starvedShown = false;
 
     function countFrame(now) {
+        if (!presented && starvedShown) {
+            starvedShown = false;
+            clearMessage();
+        }
         presented++;
         windowFrames++;
         if (!windowStart) windowStart = now;
@@ -443,6 +509,14 @@
             left.push((s.width || '?') + '×' + (s.height || '?')
                     + ' @' + (s.frameRate ? s.frameRate.toFixed(2) : '?') + 'Hz');
             left.push('got ' + (measured ? measured.toFixed(2) : '--.--') + 'Hz');
+            /* A track can be live, correctly configured and still deliver
+               nothing: `muted` on a MediaStreamTrack means the source is
+               producing no data, which is a different thing from an audio
+               mute and the only in-band signal that this is happening. */
+            if (live && state.video.track.muted) left.push('SOURCE MUTED');
+            else if (live && !presented && openedAt && performance.now() - openedAt > 2000) {
+                left.push('NO FRAMES');
+            }
             const scale = scaleNote(s.width, s.height);
             if (scale) left.push(scale);
             /* The most direct read there is on whether the capture permission
@@ -482,7 +556,10 @@
             ? video.getVideoPlaybackQuality().droppedVideoFrames : 0;
         if (dropped) right.push('dropped ' + dropped);
 
-        osd.innerHTML = '<div class="' + (state.note ? 'warn' : '') + '">'
+        const starved = !!state.video && state.video.track.readyState === 'live'
+                     && (state.video.track.muted
+                         || (!presented && openedAt && performance.now() - openedAt > 2000));
+        osd.innerHTML = '<div class="' + (state.note || starved ? 'warn' : '') + '">'
                       + escapeHtml(left.join('  ') + (state.note ? '  ' + state.note : '')) + '</div>'
                       + '<div class="right">' + escapeHtml(right.join('  ')) + '</div>';
     }
@@ -534,13 +611,17 @@
 
     /* ---- start, and keep going ---------------------------------------------- */
 
-    let restartTimer = 0;
+    let restartTimer = 0, retryDelay = 700;
 
+    /* Back off rather than hammer: a device that is missing is usually
+       missing for a while, and a page reopening it three times a second is
+       indistinguishable from a fault of its own. */
     function scheduleRestart(why) {
         state.note = why;
         renderOsd();
         clearTimeout(restartTimer);
-        restartTimer = setTimeout(start, 700);
+        restartTimer = setTimeout(start, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 15000);
     }
 
     function watch(track, kind) {
@@ -566,27 +647,21 @@
         if (video.srcObject) stop(video.srcObject);
         video.srcObject = null;
 
-        let opened = { video: { off: true }, audio: { off: true } };
+        let opened;
         try {
-            opened.video = await openVideo();
-        } catch (e) {
-            message('Could not open the video input', explain(e));
-            scheduleRestart('retrying');
+            opened = await openInputs();
+        } catch (error) {
+            message('Could not open the capture input', explain(error));
+            // A refusal is final until somebody changes it. Retrying would
+            // re-prompt, and retrying on a timer would prompt forever.
+            if (!isRefusal(error)) scheduleRestart('retrying');
             return;
         }
-        /* Sound failing is not worth throwing the picture away for: say so on
-           the strip and carry on with what did open. */
-        let audioNote = '';
-        try {
-            opened.audio = await openAudio(opened.video.track || null);
-        } catch (e) {
-            audioNote = 'audio unavailable (' + (e.name || 'error') + ')';
-        }
+        retryDelay = 700;
 
         state.video = opened.video.track ? opened.video : null;
         state.audio = opened.audio.track ? opened.audio : null;
-        state.note = [opened.video.note, opened.audio.note, audioNote]
-            .filter(Boolean).join('  ');
+        state.note = [opened.video.note, opened.audio.note].filter(Boolean).join('  ');
 
         if (!state.video && !state.audio) {
             message('Nothing to pass through',
@@ -602,6 +677,11 @@
 
         if (state.audio) meter(state.audio.track);
         if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(countFrame);
+        presented = 0;
+        windowStart = 0;
+        windowFrames = 0;
+        measured = 0;
+        openedAt = performance.now();
 
         play();
     }
@@ -637,7 +717,33 @@
         });
     }
 
-    setInterval(renderOsd, 250);
+    /* A picture that never arrives is the failure this page exists to make
+       legible, so after a few seconds of nothing it says so rather than
+       showing the same black rectangle as every other cause. */
+    function checkStarved() {
+        if (!state.video || starvedShown) return;
+        if (presented > 0) return;
+        if (!openedAt || performance.now() - openedAt < 4000) return;
+        const track = state.video.track;
+        if (track.readyState !== 'live') return;
+        starvedShown = true;
+        message('The camera opened, but is sending no frames',
+            'The device was granted and reports <code>'
+          + escapeHtml((track.getSettings().width || '?') + '×' + (track.getSettings().height || '?'))
+          + '</code>, yet not one frame has arrived'
+          + (track.muted ? ' and the track reports <code>muted</code>, meaning the source '
+                         + 'itself is producing nothing' : '') + '.\n\n'
+          + 'That is almost always the device rather than this page:\n'
+          + '• another application already holds it — a vendor utility such as\n'
+          + '  OBSBOT Center, OBS, Teams or Zoom will do it, and on Windows a\n'
+          + '  camera can be opened by two apps yet feed only the first;\n'
+          + '• a virtual camera whose source has not been started;\n'
+          + '• a privacy shutter, or the OS camera switch.\n\n'
+          + 'Close the other application and reload. Add <code>?list</code> to see '
+          + 'every input, or name a different one with <code>?video=</code>.');
+    }
+
+    setInterval(() => { renderOsd(); checkStarved(); }, 250);
     start();
     </script>
 </body>
