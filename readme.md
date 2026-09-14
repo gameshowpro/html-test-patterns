@@ -116,6 +116,27 @@ otherwise any click or keypress starts them, and the identification strip shows 
   early by the reported output latency so it leaves the speaker as the flash is presented. The
   sweep position is derived from the same clock, one frame ahead, so bar, flash and blip coincide.
 
+# Sync Grid
+
+[`sync-grid/`](sync-grid/index.html) is original to this repository. It exists to catch drift or
+misalignment introduced downstream of the page itself — by a projector/LED mapping stage, a
+multi-output splitter, or anything else that re-composites the screen into separate physical
+regions.
+
+The page lays out a grid of cells, each filled with a colour picked by its index modulo 9 (red,
+green, blue, cyan, magenta, yellow, black, grey, orange, then repeating), and every cell shows the
+*same* frame counter — 00 to 99, wrapping, incrementing once per rendered frame — sized to 90% of
+that cell's own height. Because every cell is driven from one shared counter, any two mapped
+regions should show identical digits at any instant they are viewed together; a mismatch means the
+mapping downstream is not aligned in time, and digits landing at different heights means it is not
+aligned in scale.
+
+## Query string
+
+| Flag | Effect |
+| --- | --- |
+| `rows=`, `cols=` | Grid dimensions, 1–32 each. Defaults to `rows=2&cols=2`. |
+
 # Passthrough
 
 [`passthrough/`](passthrough/index.html) is the one pattern whose picture comes from outside: it

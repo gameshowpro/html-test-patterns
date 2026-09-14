@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sync Grid</title>
+    <link rel="stylesheet" href="../cef-overlay.css">
+    <style>
+        /* Opaque by design: this pattern proves alignment between physical
+           regions of a downstream mapping, so it must not blend with anything
+           behind it. */
+        html, body {
+            background: #000 !important;
+            background-color: #000 !important;
+        }
+
+        #grid {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            display: grid;
+        }
+
+        .cell {
+            container-type: size;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            outline: 1px solid rgba(255, 255, 255, 0.35);
+            outline-offset: -1px;
+        }
+
+        .cell .counter {
+            font-family: Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace;
+            font-weight: 700;
+            font-size: 90cqh;
+            line-height: 1;
+        }
+
+        .cell .index {
+            position: absolute;
+            top: 0.4em;
+            left: 0.5em;
+            font-family: Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace;
+            font-size: clamp(10px, 3cqh, 28px);
+            font-weight: 600;
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+    <div id="grid"></div>
+
+    <script>
+    /* ------------------------------------------------------------------------
+     * Sync Grid — reveals misalignment or timing drift between regions of a
+     * screen when it is being split, warped, or re-composited downstream
+     * (e.g. projector/LED mapping, multi-output blending).
+     *
+     * Every cell renders the same frame counter (00-99, wrapping, incrementing
+     * once per rendered frame) at 90% of its own cell height. If two mapped
+     * regions ever show a different number at the same instant, or the
+     * numbers land at different heights, the mapping is misaligned.
+     *
+     * Query string:
+     *   rows=<n>   number of grid rows    (default 2)
+     *   cols=<n>   number of grid columns (default 2)
+     * --------------------------------------------------------------------- */
+
+    'use strict';
+
+    const P = new URLSearchParams(location.search);
+    const clampInt = (v, fallback, min, max) => {
+        const n = parseInt(v, 10);
+        return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+    };
+    const rows = clampInt(P.get('rows'), 2, 1, 32);
+    const cols = clampInt(P.get('cols'), 2, 1, 32);
+
+    /* Background lookup by cell index modulo 9, with a matching readable
+     * foreground for each. */
+    const PALETTE = [
+        { bg: 'red',     fg: '#fff' },
+        { bg: 'green',   fg: '#fff' },
+        { bg: 'blue',    fg: '#fff' },
+        { bg: 'cyan',    fg: '#000' },
+        { bg: 'magenta', fg: '#fff' },
+        { bg: 'yellow',  fg: '#000' },
+        { bg: 'black',   fg: '#fff' },
+        { bg: 'grey',    fg: '#000' },
+        { bg: 'orange',  fg: '#000' }
+    ];
+
+    const grid = document.getElementById('grid');
+    grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+    grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+
+    const counters = [];
+    for (let i = 0; i < rows * cols; i++) {
+        const { bg, fg } = PALETTE[i % PALETTE.length];
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        cell.style.background = bg;
+        cell.style.color = fg;
+
+        const index = document.createElement('div');
+        index.className = 'index';
+        index.textContent = `r${Math.floor(i / cols)}c${i % cols}`;
+        cell.appendChild(index);
+
+        const counter = document.createElement('div');
+        counter.className = 'counter';
+        counter.textContent = '00';
+        cell.appendChild(counter);
+
+        grid.appendChild(cell);
+        counters.push(counter);
+    }
+
+    let frame = 0;
+    function tick() {
+        frame = (frame + 1) % 100;
+        const text = frame < 10 ? `0${frame}` : `${frame}`;
+        for (const c of counters) c.textContent = text;
+        requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+    </script>
+</body>
+</html>
